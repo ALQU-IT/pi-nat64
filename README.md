@@ -41,6 +41,7 @@ Internet (IPv6 only)
 ```bash
 git clone https://github.com/ALQU-IT/Pi-Gateway.git
 cd pi-gateway
+sudo chmod +x install.sh
 sudo bash install.sh
 ```
 
