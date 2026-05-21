@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="layout">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <svg width="24" height="24" viewBox="0 0 32 32" fill="none">
+        <rect width="32" height="32" rx="8" fill="#1a1a2e"/>
+        <path d="M8 16 L16 8 L24 16 L20 16 L20 24 L12 24 L12 16 Z" fill="#4ade80" opacity="0.9"/>
+      </svg>
+      <span>pi-gateway</span>
+    </div>
+    <nav class="sidebar-nav">
+      <a href="#" class="nav-item active" data-tab="status">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12l9-9 9 9M5 10v9a1 1 0 001 1h4v-5h4v5h4a1 1 0 001-1v-9"/></svg>
+        Status
+      </a>
+      <a href="#" class="nav-item" data-tab="portfwd">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 16V4m0 0L3 8m4-4 4 4M17 8v12m0 0 4-4m-4 4-4-4"/></svg>
+        Port Forwarding
+      </a>
+      <a href="#" class="nav-item" data-tab="settings">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>
+        Settings
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      <a href="/logout" class="nav-item logout">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+        Logout
+      </a>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <main class="main">
+
+    <!-- STATUS TAB -->
+    <section id="tab-status" class="tab active">
+      <div class="page-header">
+        <h1>Status</h1>
+        <div class="status-indicator" id="overall-status">
+          <span class="dot dot-green"></span>
+          <span>All services online</span>
+        </div>
+      </div>
+
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-label">NAT64 sessions</div>
+          <div class="stat-val" id="nat64-count">—</div>
+          <div class="stat-sub">active</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">DNS64 queries</div>
+          <div class="stat-val" id="dns-count">—</div>
+          <div class="stat-sub">logged</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">AP clients</div>
+          <div class="stat-val" id="ap-count">—</div>
+          <div class="stat-sub">connected</div>
+        </div>
+      </div>
+
+      <div class="section-block">
+        <h2>Services</h2>
+        <div class="service-list">
+          <div class="service-row">
+            <span class="dot" id="svc-jool"></span>
+            <span class="svc-name">Jool (NAT64)</span>
+            <span class="svc-desc">Translates IPv6 ↔ IPv4 traffic</span>
+          </div>
+          <div class="service-row">
+            <span class="dot" id="svc-unbound"></span>
+            <span class="svc-name">Unbound (DNS64)</span>
+            <span class="svc-desc">Synthesises AAAA records for IPv4-only hosts</span>
+          </div>
+          <div class="service-row">
+            <span class="dot" id="svc-hostapd"></span>
+            <span class="svc-name">hostapd (AP)</span>
+            <span class="svc-desc">Wireless access point</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PORT FORWARDING TAB -->
+    <section id="tab-portfwd" class="tab">
+      <div class="page-header">
+        <h1>Port Forwarding</h1>
+        <button class="btn btn-primary" id="open-add-rule">+ Add rule</button>
+      </div>
+
+      <div id="rules-empty" class="empty-state" style="display:none">
+        <p>No rules yet. Add one to get started.</p>
+      </div>
+
+      <div class="table-wrap" id="rules-table-wrap">
+        <table class="data-table" id="rules-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Proto</th>
+              <th>Ext. port</th>
+              <th>Destination</th>
+              <th>Dest. port</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="rules-body"></tbody>
+        </table>
+      </div>
+
+      <!-- Add rule modal -->
+      <div class="modal-backdrop" id="add-rule-modal" style="display:none">
+        <div class="modal">
+          <div class="modal-header">
+            <h2>Add port forwarding rule</h2>
+            <button class="modal-close" id="close-add-rule">✕</button>
+          </div>
+          <div class="form-group">
+            <label>Name</label>
+            <input type="text" id="rule-name" placeholder="e.g. SSH, Home server">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Protocol</label>
+              <select id="rule-proto">
+                <option>TCP</option>
+                <option>UDP</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>External port</label>
+              <input type="number" id="rule-ext-port" placeholder="2222" min="1" max="65535">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Destination IPv6</label>
+              <input type="text" id="rule-dest-ip" placeholder="fd00::10">
+            </div>
+            <div class="form-group">
+              <label>Destination port</label>
+              <input type="number" id="rule-dest-port" placeholder="22" min="1" max="65535">
+            </div>
+          </div>
+          <div id="rule-error" class="alert alert-error" style="display:none"></div>
+          <div class="modal-footer">
+            <button class="btn" id="cancel-add-rule">Cancel</button>
+            <button class="btn btn-primary" id="save-rule">Save rule</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SETTINGS TAB -->
+    <section id="tab-settings" class="tab">
+      <div class="page-header">
+        <h1>Settings</h1>
+      </div>
+
+      <div class="section-block">
+        <h2>Access point</h2>
+        <div class="form-group">
+          <label>SSID</label>
+          <input type="text" id="cfg-ssid" placeholder="Pi-Gateway">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Channel</label>
+            <input type="number" id="cfg-channel" min="1" max="14" placeholder="6">
+          </div>
+          <div class="form-group">
+            <label>WPA2 passphrase</label>
+            <input type="password" id="cfg-pass" placeholder="leave blank to keep current">
+          </div>
+        </div>
+      </div>
+
+      <div class="section-block">
+        <h2>NAT64 / DNS64</h2>
+        <div class="form-group">
+          <label>Jool / DNS64 prefix</label>
+          <input type="text" id="cfg-jool" readonly>
+          <span class="field-hint">Change requires editing configs manually and rebooting.</span>
+        </div>
+        <div class="form-group">
+          <label>Upstream DNS (IPv6)</label>
+          <input type="text" id="cfg-upstream-dns" readonly>
+        </div>
+      </div>
+
+      <div class="section-block">
+        <h2>Admin password</h2>
+        <div class="form-group">
+          <label>New password</label>
+          <input type="password" id="cfg-new-pass" placeholder="Leave blank to keep current">
+        </div>
+      </div>
+
+      <div id="settings-msg" class="alert" style="display:none"></div>
+      <button class="btn btn-primary" id="save-settings">Save settings</button>
+    </section>
+
+  </main>
+</div>
+{% endblock %}

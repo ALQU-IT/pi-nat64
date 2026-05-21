@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %} — Login{% endblock %}
+{% block body %}
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="login-logo">
+      <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect width="32" height="32" rx="8" fill="#1a1a2e"/>
+        <path d="M8 16 L16 8 L24 16 L20 16 L20 24 L12 24 L12 16 Z" fill="#4ade80" opacity="0.9"/>
+      </svg>
+      <span>pi-gateway</span>
+    </div>
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+    <form method="POST" action="/login">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" placeholder="Enter admin password" autofocus autocomplete="current-password">
+      <button type="submit" class="btn btn-primary btn-full">Sign in</button>
+    </form>
+    <p class="login-hint">Default password is <code>admin</code> — change it in Settings after login.</p>
+  </div>
+</div>
+{% endblock %}
