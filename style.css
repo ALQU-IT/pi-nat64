@@ -1,0 +1,22 @@
+# /etc/dnsmasq.d/pi-gateway.conf
+# DHCP server for Wi-Fi AP clients (wlan0)
+# Assigns IPv6 addresses and points them to Unbound for DNS64
+
+# Only serve DHCP on the AP interface
+interface=wlan0
+bind-interfaces
+
+# IPv4 fallback pool (optional, for older clients)
+dhcp-range=192.168.50.10,192.168.50.200,255.255.255.0,24h
+
+# IPv6 DHCP — stateless (SLAAC) + stateful fallback
+# The Pi will advertise prefix fd00::/64 via radvd
+dhcp-range=::10,::ff,constructor:wlan0,ra-stateless,64,24h
+
+# Use local Unbound for DNS (DNS64)
+dhcp-option=option:dns-server,192.168.50.1
+dhcp-option=option6:dns-server,[fd00::1]
+
+# Hostname for the gateway itself
+address=/gateway.local/192.168.50.1
+address=/gateway.local/fd00::1
