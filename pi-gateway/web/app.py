@@ -1,36 +1,73 @@
 #!/usr/bin/env python3
 """Pi Gateway - NAT64/DNS64 management web UI."""
 
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import subprocess
 from functools import wraps
 
-from flask import (Flask, flash, jsonify, redirect, render_template,
+from flask import (Flask, jsonify, redirect, render_template,
                    request, session, url_for)
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "change-me-in-production")
+app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+
+# Enforce secure session cookies
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    PERMANENT_SESSION_LIFETIME=3600,   # 1-hour session timeout
+)
 
 # ---------------------------------------------------------------------------
 # Config paths
 # ---------------------------------------------------------------------------
-HOSTAPD_CONF   = "/etc/hostapd/hostapd.conf"
-UNBOUND_CONF   = "/etc/unbound/unbound.conf.d/dns64.conf"
-JOOL_PREFIX    = "64:ff9b::/96"
-PORT_RULES_FILE = "/etc/pi-gateway/port-rules.json"
+HOSTAPD_CONF        = "/etc/hostapd/hostapd.conf"
+JOOL_PREFIX         = "64:ff9b::/96"
+PORT_RULES_FILE     = "/etc/pi-gateway/port-rules.json"
 ADMIN_PASSWORD_FILE = "/etc/pi-gateway/admin.passwd"
+
+# Allowlists
+_VALID_PROTO = {"TCP", "UDP"}
+_IPV6_RE     = re.compile(r'^[0-9a-fA-F:]+$')   # rough but safe allowlist
+
 
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
 
-def load_password():
+def _hash_password(password: str) -> str:
+    """SHA-256 hex digest — good enough for a local device; use bcrypt for internet-exposed services."""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def load_password_hash() -> str:
     if os.path.exists(ADMIN_PASSWORD_FILE):
         with open(ADMIN_PASSWORD_FILE) as f:
-            return f.read().strip()
-    return "admin"          # default; setup script changes this
+            stored = f.read().strip()
+        # Migrate plain-text passwords written by old installer
+        if len(stored) != 64:
+            h = _hash_password(stored)
+            _write_password_hash(h)
+            return h
+        return stored
+    return _hash_password("admin")
+
+
+def _write_password_hash(h: str):
+    os.makedirs(os.path.dirname(ADMIN_PASSWORD_FILE), exist_ok=True)
+    with open(ADMIN_PASSWORD_FILE, "w") as f:
+        f.write(h)
+    os.chmod(ADMIN_PASSWORD_FILE, 0o600)
+
+
+def _check_password(candidate: str) -> bool:
+    stored = load_password_hash()
+    return hmac.compare_digest(_hash_password(candidate), stored)
 
 
 def login_required(f):
@@ -50,8 +87,10 @@ def login_required(f):
 def login():
     error = None
     if request.method == "POST":
-        if request.form.get("password") == load_password():
+        if _check_password(request.form.get("password", "")):
+            session.clear()                    # session fixation protection
             session["logged_in"] = True
+            session.permanent = True
             return redirect(url_for("index"))
         error = "Wrong password."
     return render_template("login.html", error=error)
@@ -81,49 +120,57 @@ def index():
 @login_required
 def api_status():
     return jsonify({
-        "nat64_sessions": _nat64_session_count(),
-        "dns_queries":    _dns_query_count(),
-        "ap_clients":     _ap_clients(),
-        "jool_running":   _service_active("jool"),
-        "unbound_running":_service_active("unbound"),
-        "hostapd_running":_service_active("hostapd"),
+        "nat64_sessions":  _nat64_session_count(),
+        "dns_queries":     _dns_query_count(),
+        "ap_clients":      _ap_clients(),
+        "jool_running":    _service_active("jool"),
+        "unbound_running": _service_active("unbound"),
+        "hostapd_running": _service_active("hostapd"),
     })
 
 
-def _run(cmd, default="0"):
+def _run_safe(args: list, default="0") -> str:
+    """Run a command with a list of args — NO shell=True."""
     try:
-        return subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL,
-                                       text=True).strip()
+        return subprocess.check_output(
+            args, stderr=subprocess.DEVNULL, text=True
+        ).strip()
     except Exception:
         return default
 
 
-def _nat64_session_count():
-    out = _run("jool session display --numeric 2>/dev/null | grep -c 'Expires'", "0")
+def _nat64_session_count() -> int:
+    out = _run_safe(["jool", "session", "display", "--numeric"], "")
+    return out.count("Expires")
+
+
+def _dns_query_count() -> int:
+    log = "/var/log/unbound.log"
+    if not os.path.exists(log):
+        return 0
     try:
+        out = subprocess.check_output(
+            ["grep", "-c", "query[", log],
+            stderr=subprocess.DEVNULL, text=True
+        ).strip()
         return int(out)
-    except ValueError:
+    except Exception:
         return 0
 
 
-def _dns_query_count():
-    out = _run("grep -c 'query\\[' /var/log/unbound.log 2>/dev/null || echo 0")
-    try:
-        return int(out)
-    except ValueError:
-        return 0
+def _ap_clients() -> int:
+    out = _run_safe(["iw", "dev", "wlan0", "station", "dump"], "")
+    return out.count("Station")
 
 
-def _ap_clients():
-    out = _run("iw dev wlan0 station dump 2>/dev/null | grep -c 'Station'", "0")
-    try:
-        return int(out)
-    except ValueError:
-        return 0
-
-
-def _service_active(name):
-    rc = subprocess.call(["systemctl", "is-active", "--quiet", name])
+def _service_active(name: str) -> bool:
+    # Allowlist service names to prevent injection through stored data
+    if name not in ("jool", "unbound", "hostapd", "dnsmasq", "radvd"):
+        return False
+    rc = subprocess.call(
+        ["systemctl", "is-active", "--quiet", name],
+        stderr=subprocess.DEVNULL
+    )
     return rc == 0
 
 
@@ -131,33 +178,51 @@ def _service_active(name):
 # API — port forwarding
 # ---------------------------------------------------------------------------
 
-def _load_rules():
+def _load_rules() -> list:
     if os.path.exists(PORT_RULES_FILE):
         with open(PORT_RULES_FILE) as f:
             return json.load(f)
     return []
 
 
-def _save_rules(rules):
+def _save_rules(rules: list):
     os.makedirs(os.path.dirname(PORT_RULES_FILE), exist_ok=True)
-    with open(PORT_RULES_FILE, "w") as f:
+    tmp = PORT_RULES_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(rules, f, indent=2)
+    os.replace(tmp, PORT_RULES_FILE)   # atomic write
 
 
-def _apply_rule(rule, delete=False):
-    """Add or delete an ip6tables DNAT rule."""
-    action = "-D" if delete else "-A"
-    proto  = rule["proto"].lower()
-    ext_p  = rule["ext_port"]
-    dst_ip = rule["dest_ip"]
-    dst_p  = rule["dest_port"]
-    cmd = (
-        f"ip6tables -t nat {action} PREROUTING "
-        f"-p {proto} --dport {ext_p} "
-        f"-j DNAT --to-destination [{dst_ip}]:{dst_p}"
-    )
-    subprocess.call(cmd, shell=True)
-    subprocess.call("netfilter-persistent save", shell=True)
+def _validate_ipv6(addr: str) -> bool:
+    """Strict IPv6 address validation — rejects anything that could be a shell injection."""
+    if not _IPV6_RE.match(addr):
+        return False
+    # Must contain at least one colon and no shell-special chars
+    if ":" not in addr:
+        return False
+    # Reject anything too long
+    if len(addr) > 39:
+        return False
+    return True
+
+
+def _apply_rule(rule: dict, delete=False):
+    """Build ip6tables command from validated fields — NO shell=True."""
+    action  = "-D" if delete else "-A"
+    proto   = rule["proto"].lower()          # already validated as tcp/udp
+    ext_p   = str(int(rule["ext_port"]))     # already validated int 1-65535
+    dst_ip  = rule["dest_ip"]               # already validated by _validate_ipv6
+    dst_p   = str(int(rule["dest_port"]))   # already validated int 1-65535
+
+    # Build arg list — never passes through a shell
+    subprocess.call([
+        "ip6tables", "-t", "nat", action, "PREROUTING",
+        "-p", proto,
+        "--dport", ext_p,
+        "-j", "DNAT",
+        "--to-destination", f"[{dst_ip}]:{dst_p}",
+    ])
+    subprocess.call(["netfilter-persistent", "save"])
 
 
 @app.route("/api/rules", methods=["GET"])
@@ -169,20 +234,23 @@ def api_rules_get():
 @app.route("/api/rules", methods=["POST"])
 @login_required
 def api_rules_add():
-    data = request.get_json(force=True)
+    data = request.get_json(force=True) or {}
     required = {"name", "proto", "ext_port", "dest_ip", "dest_port"}
     if not required.issubset(data):
         return jsonify({"error": "Missing fields"}), 400
 
-    # Basic validation
-    if data["proto"].upper() not in ("TCP", "UDP"):
+    if data["proto"].upper() not in _VALID_PROTO:
         return jsonify({"error": "proto must be TCP or UDP"}), 400
+
     for field in ("ext_port", "dest_port"):
         try:
             p = int(data[field])
             assert 1 <= p <= 65535
         except (ValueError, AssertionError):
             return jsonify({"error": f"Invalid port: {field}"}), 400
+
+    if not _validate_ipv6(data["dest_ip"]):
+        return jsonify({"error": "Invalid IPv6 destination address"}), 400
 
     rules = _load_rules()
     rule = {
@@ -234,7 +302,15 @@ def api_rules_toggle(rule_id):
 # API — settings
 # ---------------------------------------------------------------------------
 
-def _read_hostapd():
+# Strict allowlist for hostapd keys the UI is allowed to write
+_HOSTAPD_ALLOWED_KEYS = {
+    "interface", "driver", "ssid", "hw_mode", "channel",
+    "ieee80211n", "wmm_enabled", "wpa", "wpa_passphrase",
+    "wpa_key_mgmt", "rsn_pairwise", "country_code",
+}
+
+
+def _read_hostapd() -> dict:
     cfg = {}
     if not os.path.exists(HOSTAPD_CONF):
         return cfg
@@ -243,15 +319,21 @@ def _read_hostapd():
             line = line.strip()
             if "=" in line and not line.startswith("#"):
                 k, _, v = line.partition("=")
-                cfg[k.strip()] = v.strip()
+                k = k.strip()
+                if k in _HOSTAPD_ALLOWED_KEYS:
+                    cfg[k] = v.strip()
     return cfg
 
 
-def _write_hostapd(cfg):
-    lines = [f"{k}={v}\n" for k, v in cfg.items()]
-    with open(HOSTAPD_CONF, "w") as f:
-        f.writelines(lines)
-    subprocess.call("systemctl restart hostapd", shell=True)
+def _write_hostapd(cfg: dict):
+    # Only write allowed keys
+    safe_cfg = {k: v for k, v in cfg.items() if k in _HOSTAPD_ALLOWED_KEYS}
+    tmp = HOSTAPD_CONF + ".tmp"
+    with open(tmp, "w") as f:
+        for k, v in safe_cfg.items():
+            f.write(f"{k}={v}\n")
+    os.replace(tmp, HOSTAPD_CONF)
+    subprocess.call(["systemctl", "restart", "hostapd"])
 
 
 @app.route("/api/settings", methods=["GET"])
@@ -259,42 +341,76 @@ def _write_hostapd(cfg):
 def api_settings_get():
     ap = _read_hostapd()
     return jsonify({
-        "ssid":         ap.get("ssid", "Pi-Gateway"),
-        "channel":      ap.get("channel", "6"),
-        "wpa_passphrase": "••••••••",   # never expose
-        "jool_prefix":  JOOL_PREFIX,
-        "upstream_dns": "2606:4700:4700::1111",
+        "ssid":            ap.get("ssid", "Pi-Gateway"),
+        "channel":         ap.get("channel", "6"),
+        "wpa_passphrase":  "••••••••",   # never expose
+        "jool_prefix":     JOOL_PREFIX,
+        "upstream_dns":    "2606:4700:4700::1111",
     })
+
+
+def _sanitize_ssid(s: str) -> str:
+    """Allow printable ASCII excluding shell-special characters."""
+    return re.sub(r'[^\x20-\x7E]', '', s)[:32]
 
 
 @app.route("/api/settings", methods=["POST"])
 @login_required
 def api_settings_save():
-    data = request.get_json(force=True)
+    data = request.get_json(force=True) or {}
     ap = _read_hostapd()
 
     if "ssid" in data:
-        ap["ssid"] = data["ssid"][:32]
+        ap["ssid"] = _sanitize_ssid(data["ssid"])
+        if not ap["ssid"]:
+            return jsonify({"error": "SSID cannot be empty"}), 400
+
     if "channel" in data:
         try:
             ch = int(data["channel"])
             assert 1 <= ch <= 14
             ap["channel"] = str(ch)
         except (ValueError, AssertionError):
-            return jsonify({"error": "Invalid channel"}), 400
+            return jsonify({"error": "Invalid channel (must be 1–14)"}), 400
+
     if "wpa_passphrase" in data and data["wpa_passphrase"] not in ("", "••••••••"):
-        if len(data["wpa_passphrase"]) < 8:
-            return jsonify({"error": "Passphrase must be at least 8 chars"}), 400
-        ap["wpa_passphrase"] = data["wpa_passphrase"]
+        pw = data["wpa_passphrase"]
+        if len(pw) < 8 or len(pw) > 63:
+            return jsonify({"error": "Passphrase must be 8–63 characters"}), 400
+        # WPA2 passphrase: printable ASCII only
+        if not re.match(r'^[\x20-\x7E]+$', pw):
+            return jsonify({"error": "Passphrase contains invalid characters"}), 400
+        ap["wpa_passphrase"] = pw
 
     _write_hostapd(ap)
 
     if "new_password" in data and data["new_password"]:
-        os.makedirs(os.path.dirname(ADMIN_PASSWORD_FILE), exist_ok=True)
-        with open(ADMIN_PASSWORD_FILE, "w") as f:
-            f.write(data["new_password"])
+        np = data["new_password"]
+        if len(np) < 8:
+            return jsonify({"error": "Admin password must be at least 8 characters"}), 400
+        _write_password_hash(_hash_password(np))
 
     return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Security headers middleware
+# ---------------------------------------------------------------------------
+
+@app.after_request
+def set_security_headers(response):
+    response.headers["X-Content-Type-Options"]  = "nosniff"
+    response.headers["X-Frame-Options"]          = "DENY"
+    response.headers["X-XSS-Protection"]         = "1; mode=block"
+    response.headers["Referrer-Policy"]           = "strict-origin"
+    response.headers["Content-Security-Policy"]  = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'"
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------

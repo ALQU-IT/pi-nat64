@@ -223,6 +223,14 @@ ip6tables -t nat -A POSTROUTING -o "$ETH_IFACE" -j MASQUERADE
 # IPv4 fallback masquerade (for devices that fall back)
 iptables -t nat -A POSTROUTING -o "$ETH_IFACE" -j MASQUERADE
 
+# Block web UI (port 80) from the internet-facing eth0
+iptables  -A INPUT -i "$ETH_IFACE" -p tcp --dport 80 -j DROP
+ip6tables -A INPUT -i "$ETH_IFACE" -p tcp --dport 80 -j DROP
+
+# Block external access to DNS (Unbound) from eth0
+iptables  -A INPUT -i "$ETH_IFACE" -p udp --dport 53 -j DROP
+ip6tables -A INPUT -i "$ETH_IFACE" -p udp --dport 53 -j DROP
+
 # Save rules
 netfilter-persistent save
 ok "Forwarding and NAT rules applied."
@@ -235,8 +243,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cp -r "$SCRIPT_DIR/web" "$INSTALL_DIR/"
 mkdir -p /etc/pi-gateway
 
-# Store admin password
-echo "$ADMIN_PASS" > /etc/pi-gateway/admin.passwd
+# Store admin password as SHA-256 hash (never store plaintext)
+ADMIN_PASS_HASH=$(echo -n "$ADMIN_PASS" | sha256sum | awk '{print $1}')
+echo "$ADMIN_PASS_HASH" > /etc/pi-gateway/admin.passwd
 chmod 600 /etc/pi-gateway/admin.passwd
 
 # Install Python deps
@@ -260,6 +269,10 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# Lock down install dir — no world read
+chmod 750 "$INSTALL_DIR/web"
+chmod 640 "$INSTALL_DIR/web/app.py"
 
 systemctl daemon-reload
 systemctl enable --now pi-gateway-ui
