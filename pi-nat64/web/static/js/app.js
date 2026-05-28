@@ -1,4 +1,13 @@
-/* pi-gateway — frontend JS */
+/* pi-nat64 — frontend JS */
+
+// ── CSRF token ────────────────────────────────────────────────────────────────
+function getCsrfToken() {
+  return document.querySelector('meta[name="csrf-token"]')?.content || '';
+}
+
+function csrfHeaders(extra) {
+  return Object.assign({ 'X-CSRF-Token': getCsrfToken() }, extra);
+}
 
 // ── Tab navigation ──────────────────────────────────────────────────────────
 document.querySelectorAll('.nav-item[data-tab]').forEach(link => {
@@ -92,13 +101,13 @@ function renderRules(rules) {
 }
 
 async function toggleRule(id) {
-  await fetch(`/api/rules/${id}/toggle`, { method: 'POST' });
+  await fetch(`/api/rules/${id}/toggle`, { method: 'POST', headers: csrfHeaders() });
   loadRules();
 }
 
 async function deleteRule(id) {
   if (!confirm('Delete this rule?')) return;
-  await fetch(`/api/rules/${id}`, { method: 'DELETE' });
+  await fetch(`/api/rules/${id}`, { method: 'DELETE', headers: csrfHeaders() });
   loadRules();
 }
 
@@ -135,7 +144,7 @@ document.getElementById('save-rule')?.addEventListener('click', async () => {
 
   const res = await fetch('/api/rules', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
   });
 
@@ -166,16 +175,16 @@ function setVal(id, val) {
 
 document.getElementById('save-settings')?.addEventListener('click', async () => {
   const body = {
-    ssid:         document.getElementById('cfg-ssid').value.trim(),
-    channel:      document.getElementById('cfg-channel').value,
+    ssid:           document.getElementById('cfg-ssid').value.trim(),
+    channel:        document.getElementById('cfg-channel').value,
     wpa_passphrase: document.getElementById('cfg-pass').value,
-    new_password: document.getElementById('cfg-new-pass').value,
+    new_password:   document.getElementById('cfg-new-pass').value,
   };
 
   const msgEl = document.getElementById('settings-msg');
   const res = await fetch('/api/settings', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
   });
 

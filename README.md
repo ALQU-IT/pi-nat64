@@ -1,4 +1,4 @@
-# Pi Gateway
+# pi-nat64
 
 NAT64/DNS64 gateway + Wi-Fi access point + web management UI for Raspberry Pi 5.
 
@@ -39,8 +39,8 @@ Internet (IPv6 only)
 ## Quick install
 
 ```bash
-git clone https://github.com/ALQU-IT/Pi-Gateway.git
-cd pi-gateway
+git clone https://github.com/ALQU-IT/pi-nat64.git
+cd pi-nat64
 sudo chmod +x install.sh
 sudo bash install.sh
 ```
@@ -50,7 +50,7 @@ The script will:
 1. Install all dependencies (`jool-tools`, `unbound`, `hostapd`, `dnsmasq`, `radvd`, `flask`, …)
 2. Configure Jool NAT64 with prefix `64:ff9b::/96`
 3. Configure Unbound DNS64
-4. Set up the Wi-Fi access point (`Pi-Gateway` / `ChangeMe123`)
+4. Set up the Wi-Fi access point (`pi-nat64` / `ChangeMe123`)
 5. Enable DHCP + IPv6 RAs for connected clients
 6. Apply forwarding rules and persist them via `netfilter-persistent`
 7. Deploy and start the Flask web UI as a systemd service
@@ -60,7 +60,7 @@ The script will:
 
 ## Web UI
 
-After installation, connect any device to the `Pi-Gateway` Wi-Fi and open:
+After installation, connect any device to the `pi-nat64` Wi-Fi and open:
 
 ```
 http://gateway.local
@@ -87,14 +87,14 @@ Default password: `admin` — **change it immediately in Settings**.
 ## File layout
 
 ```
-pi-gateway/
+pi-nat64/
 ├── install.sh              ← run this first
 ├── configs/
 │   ├── hostapd.conf        ← AP config (copied to /etc/hostapd/)
 │   ├── dns64.conf          ← Unbound DNS64 (copied to /etc/unbound/…)
 │   ├── dnsmasq.conf        ← DHCP for wlan0 (copied to /etc/dnsmasq.d/)
 │   ├── radvd.conf          ← IPv6 router advertisements
-│   └── 99-pi-gateway.conf  ← sysctl forwarding settings
+│   └── 99-pi-nat64.conf  ← sysctl forwarding settings
 ├── web/
 │   ├── app.py              ← Flask application
 │   ├── requirements.txt
@@ -106,14 +106,14 @@ pi-gateway/
 │       ├── css/style.css
 │       └── js/app.js
 └── systemd/
-    └── pi-gateway-ui.service
+    └── pi-nat64-ui.service
 ```
 
 ---
 
 ## Port forwarding
 
-Rules are written to `/etc/pi-gateway/port-rules.json` and applied as `ip6tables` DNAT rules:
+Rules are written to `/etc/pi-nat64/port-rules.json` and applied as `ip6tables` DNAT rules:
 
 ```
 ip6tables -t nat -A PREROUTING -p tcp --dport <ext> -j DNAT --to-destination [<dest_ip>]:<dest_port>
@@ -146,7 +146,7 @@ jool instance add default --netfilter --pool6 64:ff9b::/96
 | No Wi-Fi AP visible | `systemctl status hostapd` — check country code in hostapd.conf |
 | IPv4 sites unreachable | `jool session display` — sessions should appear; check `ip6tables -t nat -L` |
 | DNS not working | `systemctl status unbound`; test with `dig @fd00::1 google.com AAAA` |
-| Web UI not loading | `journalctl -u pi-gateway-ui -f`; check port 80 is free |
+| Web UI not loading | `journalctl -u pi-nat64-ui -f`; check port 80 is free |
 | gateway.local not resolving | `systemctl status avahi-daemon` |
 
 ---
@@ -154,7 +154,7 @@ jool instance add default --netfilter --pool6 64:ff9b::/96
 ## Security notes
 
 - The web UI runs on port 80 with no TLS. Use it only on your local AP network.
-- The admin password is stored in plaintext at `/etc/pi-gateway/admin.passwd`. Change it promptly.
+- The admin password is stored in plaintext at `/etc/pi-nat64/admin.passwd`. Change it promptly.
 - Port-forwarding rules expose internal services — only add rules you need.
 - Consider adding a firewall rule to block web UI access from `eth0`:
   ```bash
