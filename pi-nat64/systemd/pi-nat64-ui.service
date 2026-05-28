@@ -6,7 +6,7 @@ After=network.target hostapd.service unbound.service
 Type=simple
 User=root
 WorkingDirectory=/opt/pi-nat64/web
-Environment=SECRET_KEY=CHANGE_THIS_TO_RANDOM_STRING
+EnvironmentFile=/etc/pi-nat64/secret.env
 ExecStart=/usr/bin/python3 /opt/pi-nat64/web/app.py
 Restart=on-failure
 RestartSec=5

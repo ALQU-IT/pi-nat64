@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import subprocess
+import time
 from functools import wraps
 
 from flask import (Flask, jsonify, redirect, render_template,
@@ -33,7 +34,38 @@ ADMIN_PASSWORD_FILE = "/etc/pi-nat64/admin.passwd"
 
 # Allowlists
 _VALID_PROTO = {"TCP", "UDP"}
-_IPV6_RE     = re.compile(r'^[0-9a-fA-F:]+$')   # rough but safe allowlist
+_IPV6_RE     = re.compile(r'^[0-9a-fA-F:]+$')
+# Detect a valid SHA-256 hex digest (exactly 64 lowercase hex chars)
+_HASH_RE     = re.compile(r'^[0-9a-f]{64}$')
+
+
+# ---------------------------------------------------------------------------
+# Login rate limiting (in-memory, per remote IP)
+# ---------------------------------------------------------------------------
+_login_attempts: dict = {}
+_MAX_ATTEMPTS  = 10
+_LOCKOUT_SECS  = 60
+
+
+def _check_rate_limit(ip: str) -> bool:
+    now = time.monotonic()
+    entry = _login_attempts.get(ip)
+    if entry and entry["count"] >= _MAX_ATTEMPTS:
+        if now < entry["reset_at"]:
+            return False
+        del _login_attempts[ip]
+    return True
+
+
+def _record_failed_login(ip: str):
+    now = time.monotonic()
+    entry = _login_attempts.setdefault(ip, {"count": 0, "reset_at": 0.0})
+    entry["count"] += 1
+    entry["reset_at"] = now + _LOCKOUT_SECS
+
+
+def _clear_login_attempts(ip: str):
+    _login_attempts.pop(ip, None)
 
 
 # ---------------------------------------------------------------------------
@@ -49,8 +81,8 @@ def load_password_hash() -> str:
     if os.path.exists(ADMIN_PASSWORD_FILE):
         with open(ADMIN_PASSWORD_FILE) as f:
             stored = f.read().strip()
-        # Migrate plain-text passwords written by old installer
-        if len(stored) != 64:
+        # Migrate plain-text passwords: a real hash is exactly 64 lowercase hex chars
+        if not _HASH_RE.match(stored):
             h = _hash_password(stored)
             _write_password_hash(h)
             return h
@@ -60,9 +92,18 @@ def load_password_hash() -> str:
 
 def _write_password_hash(h: str):
     os.makedirs(os.path.dirname(ADMIN_PASSWORD_FILE), exist_ok=True)
-    with open(ADMIN_PASSWORD_FILE, "w") as f:
-        f.write(h)
-    os.chmod(ADMIN_PASSWORD_FILE, 0o600)
+    tmp = ADMIN_PASSWORD_FILE + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            f.write(h)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, ADMIN_PASSWORD_FILE)  # atomic
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _check_password(candidate: str) -> bool:
@@ -80,6 +121,34 @@ def login_required(f):
 
 
 # ---------------------------------------------------------------------------
+# CSRF protection
+# ---------------------------------------------------------------------------
+
+def _get_csrf_token() -> str:
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_hex(32)
+    return session["csrf_token"]
+
+
+def csrf_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token  = request.headers.get("X-CSRF-Token", "")
+        stored = session.get("csrf_token", "")
+        if not stored or not hmac.compare_digest(token, stored):
+            return jsonify({"error": "Invalid CSRF token"}), 403
+        return f(*args, **kwargs)
+    return decorated
+
+
+@app.context_processor
+def _inject_csrf():
+    if session.get("logged_in"):
+        return {"csrf_token": _get_csrf_token()}
+    return {"csrf_token": ""}
+
+
+# ---------------------------------------------------------------------------
 # Auth routes
 # ---------------------------------------------------------------------------
 
@@ -87,12 +156,19 @@ def login_required(f):
 def login():
     error = None
     if request.method == "POST":
-        if _check_password(request.form.get("password", "")):
+        ip = request.remote_addr
+        if not _check_rate_limit(ip):
+            error = "Too many failed attempts. Try again later."
+        elif _check_password(request.form.get("password", "")):
+            _clear_login_attempts(ip)
             session.clear()                    # session fixation protection
             session["logged_in"] = True
+            session["csrf_token"] = secrets.token_hex(32)
             session.permanent = True
             return redirect(url_for("index"))
-        error = "Wrong password."
+        else:
+            _record_failed_login(ip)
+            error = "Wrong password."
     return render_template("login.html", error=error)
 
 
@@ -206,23 +282,25 @@ def _validate_ipv6(addr: str) -> bool:
     return True
 
 
-def _apply_rule(rule: dict, delete=False):
-    """Build ip6tables command from validated fields — NO shell=True."""
+def _apply_rule(rule: dict, delete=False) -> bool:
+    """Build ip6tables command from validated fields — NO shell=True. Returns True on success."""
     action  = "-D" if delete else "-A"
     proto   = rule["proto"].lower()          # already validated as tcp/udp
     ext_p   = str(int(rule["ext_port"]))     # already validated int 1-65535
     dst_ip  = rule["dest_ip"]               # already validated by _validate_ipv6
     dst_p   = str(int(rule["dest_port"]))   # already validated int 1-65535
 
-    # Build arg list — never passes through a shell
-    subprocess.call([
+    rc = subprocess.call([
         "ip6tables", "-t", "nat", action, "PREROUTING",
         "-p", proto,
         "--dport", ext_p,
         "-j", "DNAT",
         "--to-destination", f"[{dst_ip}]:{dst_p}",
     ])
+    if rc != 0:
+        return False
     subprocess.call(["netfilter-persistent", "save"])
+    return True
 
 
 @app.route("/api/rules", methods=["GET"])
@@ -233,6 +311,7 @@ def api_rules_get():
 
 @app.route("/api/rules", methods=["POST"])
 @login_required
+@csrf_required
 def api_rules_add():
     data = request.get_json(force=True) or {}
     required = {"name", "proto", "ext_port", "dest_ip", "dest_port"}
@@ -262,20 +341,23 @@ def api_rules_add():
         "dest_port": int(data["dest_port"]),
         "enabled":   True,
     }
+    if not _apply_rule(rule):
+        return jsonify({"error": "Failed to apply ip6tables rule — is ip6table_nat loaded?"}), 500
     rules.append(rule)
     _save_rules(rules)
-    _apply_rule(rule)
     return jsonify(rule), 201
 
 
 @app.route("/api/rules/<int:rule_id>", methods=["DELETE"])
 @login_required
+@csrf_required
 def api_rules_delete(rule_id):
     rules = _load_rules()
     target = next((r for r in rules if r["id"] == rule_id), None)
     if not target:
         return jsonify({"error": "Not found"}), 404
-    _apply_rule(target, delete=True)
+    if not _apply_rule(target, delete=True):
+        return jsonify({"error": "Failed to remove ip6tables rule"}), 500
     rules = [r for r in rules if r["id"] != rule_id]
     _save_rules(rules)
     return jsonify({"deleted": rule_id})
@@ -283,16 +365,19 @@ def api_rules_delete(rule_id):
 
 @app.route("/api/rules/<int:rule_id>/toggle", methods=["POST"])
 @login_required
+@csrf_required
 def api_rules_toggle(rule_id):
     rules = _load_rules()
     target = next((r for r in rules if r["id"] == rule_id), None)
     if not target:
         return jsonify({"error": "Not found"}), 404
     if target["enabled"]:
-        _apply_rule(target, delete=True)
+        if not _apply_rule(target, delete=True):
+            return jsonify({"error": "Failed to remove ip6tables rule"}), 500
         target["enabled"] = False
     else:
-        _apply_rule(target)
+        if not _apply_rule(target):
+            return jsonify({"error": "Failed to apply ip6tables rule"}), 500
         target["enabled"] = True
     _save_rules(rules)
     return jsonify(target)
@@ -302,10 +387,12 @@ def api_rules_toggle(rule_id):
 # API — settings
 # ---------------------------------------------------------------------------
 
-# Strict allowlist for hostapd keys the UI is allowed to write
+# Strict allowlist for hostapd keys the UI is allowed to write.
+# "wpa" is intentionally excluded — toggling encryption mode requires
+# deliberate manual config, not a single API field.
 _HOSTAPD_ALLOWED_KEYS = {
     "interface", "driver", "ssid", "hw_mode", "channel",
-    "ieee80211n", "wmm_enabled", "wpa", "wpa_passphrase",
+    "ieee80211n", "wmm_enabled", "wpa_passphrase",
     "wpa_key_mgmt", "rsn_pairwise", "country_code",
 }
 
@@ -356,6 +443,7 @@ def _sanitize_ssid(s: str) -> str:
 
 @app.route("/api/settings", methods=["POST"])
 @login_required
+@csrf_required
 def api_settings_save():
     data = request.get_json(force=True) or {}
     ap = _read_hostapd()
@@ -377,9 +465,9 @@ def api_settings_save():
         pw = data["wpa_passphrase"]
         if len(pw) < 8 or len(pw) > 63:
             return jsonify({"error": "Passphrase must be 8–63 characters"}), 400
-        # WPA2 passphrase: printable ASCII only
-        if not re.match(r'^[\x20-\x7E]+$', pw):
-            return jsonify({"error": "Passphrase contains invalid characters"}), 400
+        # WPA2 passphrase: printable ASCII excluding '#' (hostapd treats it as comment)
+        if not re.match(r'^[\x20-\x22\x24-\x7E]+$', pw):
+            return jsonify({"error": "Passphrase contains invalid characters (# not allowed)"}), 400
         ap["wpa_passphrase"] = pw
 
     _write_hostapd(ap)

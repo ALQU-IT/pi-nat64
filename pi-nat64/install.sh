@@ -27,7 +27,10 @@ AP_GW_IPV6="fd00::1"
 JOOL_PREFIX="64:ff9b::/96"
 ADMIN_PASS="admin"            # web UI password — change after first login
 INSTALL_DIR="/opt/pi-nat64"
-SECRET_KEY=$(tr -dc 'A-Za-z0-9!@#$%^&*' </dev/urandom | head -c 32 || true)
+SECRET_KEY=$(tr -dc 'A-Za-z0-9!@^&*' </dev/urandom | head -c 32 || true)
+
+# Validate passphrase doesn't contain '#' (hostapd treats it as a comment character)
+[[ "$AP_PASS" == *"#"* ]] && error "AP_PASS must not contain '#'"
 
 echo ""
 echo "  pi-nat64 installer"
@@ -224,12 +227,13 @@ ip6tables -t nat -A POSTROUTING -o "$ETH_IFACE" -j MASQUERADE
 iptables -t nat -A POSTROUTING -o "$ETH_IFACE" -j MASQUERADE
 
 # Block web UI (port 80) from the internet-facing eth0
-iptables  -A INPUT -i "$ETH_IFACE" -p tcp --dport 80 -j DROP
-ip6tables -A INPUT -i "$ETH_IFACE" -p tcp --dport 80 -j DROP
+# Use -I to insert at the top so pre-existing ACCEPT rules don't bypass the block
+iptables  -I INPUT 1 -i "$ETH_IFACE" -p tcp --dport 80 -j DROP
+ip6tables -I INPUT 1 -i "$ETH_IFACE" -p tcp --dport 80 -j DROP
 
 # Block external access to DNS (Unbound) from eth0
-iptables  -A INPUT -i "$ETH_IFACE" -p udp --dport 53 -j DROP
-ip6tables -A INPUT -i "$ETH_IFACE" -p udp --dport 53 -j DROP
+iptables  -I INPUT 1 -i "$ETH_IFACE" -p udp --dport 53 -j DROP
+ip6tables -I INPUT 1 -i "$ETH_IFACE" -p udp --dport 53 -j DROP
 
 # Save rules
 netfilter-persistent save
@@ -242,6 +246,10 @@ mkdir -p "$INSTALL_DIR"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cp -r "$SCRIPT_DIR/web" "$INSTALL_DIR/"
 mkdir -p /etc/pi-nat64
+
+# Store SECRET_KEY in a root-only file; the unit's EnvironmentFile reads it
+printf 'SECRET_KEY=%s\n' "$SECRET_KEY" > /etc/pi-nat64/secret.env
+chmod 600 /etc/pi-nat64/secret.env
 
 # Store admin password as SHA-256 hash (never store plaintext)
 ADMIN_PASS_HASH=$(echo -n "$ADMIN_PASS" | sha256sum | awk '{print $1}')
@@ -261,7 +269,7 @@ After=network.target hostapd.service unbound.service
 Type=simple
 User=root
 WorkingDirectory=$INSTALL_DIR/web
-Environment=SECRET_KEY=$SECRET_KEY
+EnvironmentFile=/etc/pi-nat64/secret.env
 ExecStart=/usr/bin/python3 $INSTALL_DIR/web/app.py
 Restart=on-failure
 RestartSec=5
