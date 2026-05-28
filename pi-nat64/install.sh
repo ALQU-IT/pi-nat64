@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  pi-gateway — one-shot install script
+#  pi-nat64 — one-shot install script
 #  Raspberry Pi 5 · Raspbian OS (bookworm/bullseye)
 #  Run as root: sudo bash install.sh
 # =============================================================================
@@ -16,7 +16,7 @@ ok()    { echo -e "${GREEN}[✓]${NC} $*"; }
 [[ $EUID -ne 0 ]] && error "Run this script as root: sudo bash install.sh"
 
 # ── Config — edit before running ─────────────────────────────────────────────
-AP_SSID="Pi-Gateway"
+AP_SSID="pi-nat64"
 AP_PASS="ChangeMe123"         # min 8 chars
 AP_CHANNEL="6"
 AP_IFACE="wlan0"
@@ -26,11 +26,11 @@ AP_PREFIX="fd00::/64"
 AP_GW_IPV6="fd00::1"
 JOOL_PREFIX="64:ff9b::/96"
 ADMIN_PASS="admin"            # web UI password — change after first login
-INSTALL_DIR="/opt/pi-gateway"
+INSTALL_DIR="/opt/pi-nat64"
 SECRET_KEY=$(tr -dc 'A-Za-z0-9!@#$%^&*' </dev/urandom | head -c 32 || true)
 
 echo ""
-echo "  Pi Gateway installer"
+echo "  pi-nat64 installer"
 echo "  ─────────────────────────────────────────────"
 echo "  AP SSID   : $AP_SSID"
 echo "  AP iface  : $AP_IFACE"
@@ -166,7 +166,7 @@ ok "hostapd access point configured (SSID: $AP_SSID)."
 info "Configuring dnsmasq DHCP..."
 
 # Disable dnsmasq's own DNS (Unbound handles it)
-cat > /etc/dnsmasq.d/pi-gateway.conf <<EOF
+cat > /etc/dnsmasq.d/pi-nat64.conf <<EOF
 interface=$AP_IFACE
 bind-interfaces
 port=0
@@ -207,7 +207,7 @@ ok "radvd configured."
 # ── 9. Kernel forwarding + iptables ──────────────────────────────────────────
 info "Enabling IP forwarding and NAT rules..."
 
-cat > /etc/sysctl.d/99-pi-gateway.conf <<EOF
+cat > /etc/sysctl.d/99-pi-nat64.conf <<EOF
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
 net.ipv6.conf.default.forwarding = 1
@@ -241,20 +241,20 @@ info "Deploying web UI to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cp -r "$SCRIPT_DIR/web" "$INSTALL_DIR/"
-mkdir -p /etc/pi-gateway
+mkdir -p /etc/pi-nat64
 
 # Store admin password as SHA-256 hash (never store plaintext)
 ADMIN_PASS_HASH=$(echo -n "$ADMIN_PASS" | sha256sum | awk '{print $1}')
-echo "$ADMIN_PASS_HASH" > /etc/pi-gateway/admin.passwd
-chmod 600 /etc/pi-gateway/admin.passwd
+echo "$ADMIN_PASS_HASH" > /etc/pi-nat64/admin.passwd
+chmod 600 /etc/pi-nat64/admin.passwd
 
 # Install Python deps
 pip3 install flask --break-system-packages -q
 
 # Install systemd service
-cat > /etc/systemd/system/pi-gateway-ui.service <<EOF
+cat > /etc/systemd/system/pi-nat64-ui.service <<EOF
 [Unit]
-Description=Pi Gateway Web UI
+Description=pi-nat64 Web UI
 After=network.target hostapd.service unbound.service
 
 [Service]
@@ -275,7 +275,7 @@ chmod 750 "$INSTALL_DIR/web"
 chmod 640 "$INSTALL_DIR/web/app.py"
 
 systemctl daemon-reload
-systemctl enable --now pi-gateway-ui
+systemctl enable --now pi-nat64-ui
 ok "Web UI deployed and started."
 
 # ── 11. Avahi (mDNS for gateway.local) ───────────────────────────────────────
@@ -301,7 +301,7 @@ echo "  4. Change the AP passphrase in Settings"
 echo "  5. Add port-forwarding rules as needed"
 echo ""
 echo "  Logs:"
-echo "    journalctl -u pi-gateway-ui -f"
+echo "    journalctl -u pi-nat64-ui -f"
 echo "    journalctl -u hostapd -f"
 echo "    journalctl -u unbound -f"
 echo ""

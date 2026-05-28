@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pi Gateway - NAT64/DNS64 management web UI."""
+"""pi-nat64 - NAT64/DNS64 management web UI."""
 
 import hashlib
 import hmac
@@ -28,8 +28,8 @@ app.config.update(
 # ---------------------------------------------------------------------------
 HOSTAPD_CONF        = "/etc/hostapd/hostapd.conf"
 JOOL_PREFIX         = "64:ff9b::/96"
-PORT_RULES_FILE     = "/etc/pi-gateway/port-rules.json"
-ADMIN_PASSWORD_FILE = "/etc/pi-gateway/admin.passwd"
+PORT_RULES_FILE     = "/etc/pi-nat64/port-rules.json"
+ADMIN_PASSWORD_FILE = "/etc/pi-nat64/admin.passwd"
 
 # Allowlists
 _VALID_PROTO = {"TCP", "UDP"}
@@ -341,7 +341,7 @@ def _write_hostapd(cfg: dict):
 def api_settings_get():
     ap = _read_hostapd()
     return jsonify({
-        "ssid":            ap.get("ssid", "Pi-Gateway"),
+        "ssid":            ap.get("ssid", "pi-nat64"),
         "channel":         ap.get("channel", "6"),
         "wpa_passphrase":  "••••••••",   # never expose
         "jool_prefix":     JOOL_PREFIX,
