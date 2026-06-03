@@ -70,6 +70,32 @@ The installer handles everything:
 
 ---
 
+## USB Wi-Fi adapter drivers
+
+If your Raspberry Pi needs an external USB Wi-Fi adapter for `wlan0`, run the driver installer after the main setup:
+
+```bash
+sudo bash install-drivers.sh --auto   # detect plugged-in adapter and install
+sudo bash install-drivers.sh          # interactive menu to pick manually
+sudo bash install-drivers.sh --all    # install every supported driver
+```
+
+Supported chipsets:
+
+| Chipset | Type | Example adapters |
+|---------|------|-----------------|
+| RTL8812AU / RTL8821AU | AC1200 / AC600 | Alfa AWUS036ACH, TP-Link Archer T4U / T2U |
+| RTL8814AU | AC1900 | Alfa AWUS1900, ASUS USB-AC68 |
+| RTL8188EUS | N150 | TP-Link TL-WN725N v3 |
+| MT7610U / MT7612U | AC600 / AC1200 | Alfa AWUS036ACHM / AWUS036ACM |
+| AR9271 | N150 | Alfa AWUS036NHA, TP-Link TL-WN722N v1 |
+| MT7921U | AX1800 | Alfa AWUS036AXML, Panda PAU0F, BrosTrend AX9L |
+| RTL8832BU | AX1800 | BrosTrend AX1L / AX4L (Model AX4) |
+
+Out-of-tree drivers are installed via DKMS and survive kernel updates. In-kernel chipsets (MT7610U, MT7612U, AR9271, MT7921U) only require a firmware package — no compilation needed.
+
+---
+
 ## Web UI
 
 Connect any device to the `pi-nat64` Wi-Fi, then open:
@@ -109,6 +135,7 @@ or `http://192.168.50.1`. Default login password: `admin`.
 ```
 pi-nat64/
 ├── install.sh                  ← one-shot installer, run as root
+├── install-drivers.sh          ← optional USB Wi-Fi adapter driver installer
 ├── configs/
 │   ├── dns64.conf              ← Unbound DNS64 (127.0.0.1:5335)
 │   ├── pihole-setupVars.conf   ← Pi-hole unattended install config
@@ -167,6 +194,7 @@ dig @fd00::1 example.com AAAA
 | Symptom | Check |
 |---------|-------|
 | No Wi-Fi AP visible | `systemctl status hostapd` — verify `country_code` in `/etc/hostapd/hostapd.conf` |
+| USB adapter not detected | `lsusb` — check adapter is listed; run `sudo bash install-drivers.sh --auto` |
 | IPv4 sites unreachable | `jool session display` — sessions should appear; check `ip6tables -t nat -L` |
 | Ads still showing | `pihole status` — should say `active`; run `pihole -g` to refresh blocklists |
 | DNS not resolving | `dig @127.0.0.1 -p 5335 google.com AAAA` (Unbound); `dig @fd00::1 google.com AAAA` (Pi-hole) |
