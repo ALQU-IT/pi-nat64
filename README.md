@@ -1,6 +1,6 @@
 # pi-nat64
 
-**[Live UI Demo →](https://alqu-it.github.io/pi-gateway/)**
+**[Live UI Demo →](https://alqu-it.github.io/pi-nat64/)**
 
 NAT64/DNS64 gateway + network-wide ad blocking + Wi-Fi access point, with a browser-based management UI. Built for Raspberry Pi 5.
 
