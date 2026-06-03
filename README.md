@@ -1,5 +1,7 @@
 # pi-nat64
 
+**[Live UI Demo →](https://alqu-it.github.io/pi-gateway/)**
+
 NAT64/DNS64 gateway + network-wide ad blocking + Wi-Fi access point, with a browser-based management UI. Built for Raspberry Pi 5.
 
 Lets **IPv6-only devices** reach IPv4-only services transparently, while blocking ads and trackers for every device on the network.
@@ -109,7 +111,8 @@ or `http://192.168.50.1`. Default login password: `admin`.
 | Tab | What you can do |
 |-----|----------------|
 | **Status** | Live NAT64 session count, AP client count, per-service health indicators |
-| **Blocking** | Queries today, blocked today, block %, gravity size, top-10 blocked domains, toggle blocking on/off |
+| **Blocking** | Queries today, blocked today, block %, gravity size, top-10 blocked domains, toggle blocking, manage adlists, whitelist |
+| **Clients** | View connected devices, signal strength, data usage, block/unblock individual clients |
 | **Port Forwarding** | Add, enable/disable, and delete TCP/UDP DNAT rules |
 | **Settings** | SSID, Wi-Fi channel, WPA2 passphrase, admin password |
 
@@ -136,6 +139,8 @@ or `http://192.168.50.1`. Default login password: `admin`.
 pi-nat64/
 ├── install.sh                  ← one-shot installer, run as root
 ├── install-drivers.sh          ← optional USB Wi-Fi adapter driver installer
+├── docs/
+│   └── index.html              ← interactive UI demo (GitHub Pages)
 ├── configs/
 │   ├── dns64.conf              ← Unbound DNS64 (127.0.0.1:5335)
 │   ├── pihole-setupVars.conf   ← Pi-hole unattended install config

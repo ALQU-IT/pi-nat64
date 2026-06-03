@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pi-nat64 — demo</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:#0f0f18; --bg2:#16161f; --bg3:#1e1e2a; --border:#2a2a3a;
+  --text:#e8e8f0; --muted:#8888a0; --accent:#4ade80; --accent-d:#22c55e;
+  --danger:#f87171; --warning:#fbbf24; --info:#60a5fa;
+  --sidebar-w:220px; --radius:8px; --radius-lg:12px;
+}
+html,body{height:100%;font-family:'SF Mono','Fira Code','Consolas',monospace;background:var(--bg);color:var(--text);font-size:14px;line-height:1.6;}
+a{color:inherit;text-decoration:none;}
+.layout{display:flex;height:100vh;overflow:hidden;}
+
+/* Sidebar */
+.sidebar{width:var(--sidebar-w);flex-shrink:0;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;}
+.sidebar-logo{display:flex;align-items:center;gap:10px;padding:20px 18px;font-size:15px;font-weight:600;border-bottom:1px solid var(--border);letter-spacing:.02em;}
+.sidebar-nav{flex:1;padding:12px 8px;display:flex;flex-direction:column;gap:2px;}
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:var(--radius);color:var(--muted);font-size:13px;cursor:pointer;transition:background .15s,color .15s;user-select:none;}
+.nav-item:hover{background:var(--bg3);color:var(--text);}
+.nav-item.active{background:var(--bg3);color:var(--accent);}
+.nav-item svg{flex-shrink:0;}
+.sidebar-footer{padding:8px;border-top:1px solid var(--border);display:flex;align-items:center;gap:2px;}
+.logout{color:var(--muted);flex:1;}
+.logout:hover{color:var(--danger);}
+.reboot-btn{background:none;border:none;cursor:pointer;font-family:inherit;color:var(--muted);display:flex;align-items:center;justify-content:center;padding:9px 10px;border-radius:var(--radius);flex-shrink:0;transition:background .15s,color .15s;}
+.reboot-btn:hover{background:var(--bg3);color:var(--warning);}
+
+/* Main */
+.main{flex:1;overflow-y:auto;padding:32px 40px;background:var(--bg);}
+.tab{display:none;} .tab.active{display:block;}
+.page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px;}
+.page-header h1{font-size:22px;font-weight:600;letter-spacing:-.01em;}
+
+/* Stat grid */
+.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:32px;}
+.stat-grid.cols3{grid-template-columns:repeat(3,1fr);}
+.stat-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;}
+.stat-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;}
+.stat-val{font-size:32px;font-weight:600;color:var(--accent);line-height:1;margin-bottom:4px;}
+.stat-sub{font-size:11px;color:var(--muted);}
+
+/* Section block */
+.section-block{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px 24px;margin-bottom:20px;}
+.section-block h2{font-size:13px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:16px;}
+
+/* Services */
+.service-list{display:flex;flex-direction:column;}
+.service-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--border);}
+.service-row:last-child{border-bottom:none;}
+.svc-name{font-size:13px;font-weight:500;min-width:160px;}
+.svc-desc{font-size:12px;color:var(--muted);}
+
+/* Dots */
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0;}
+.dot-green{background:var(--accent);box-shadow:0 0 6px var(--accent);}
+.dot-red{background:var(--danger);box-shadow:0 0 6px var(--danger);}
+.dot-yellow{background:var(--warning);}
+.status-indicator{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);}
+
+/* Table */
+.table-wrap{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;}
+.data-table{width:100%;border-collapse:collapse;font-size:13px;}
+.data-table th{background:var(--bg3);color:var(--muted);font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.06em;padding:10px 16px;text-align:left;border-bottom:1px solid var(--border);}
+.data-table td{padding:12px 16px;border-bottom:1px solid var(--border);color:var(--text);}
+.data-table tr:last-child td{border-bottom:none;}
+.data-table tr:hover td{background:var(--bg3);}
+
+/* Pills */
+.pill{display:inline-block;font-size:10px;font-weight:600;padding:2px 7px;border-radius:999px;letter-spacing:.04em;}
+.pill-tcp{background:rgba(96,165,250,.15);color:var(--info);}
+.pill-udp{background:rgba(251,191,36,.15);color:var(--warning);}
+.pill-on{background:rgba(74,222,128,.15);color:var(--accent);}
+.pill-off{background:rgba(248,113,113,.15);color:var(--danger);}
+.pill-muted{background:rgba(136,136,160,.15);color:var(--muted);}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg2);color:var(--text);font-family:inherit;font-size:13px;cursor:pointer;transition:background .15s,border-color .15s;}
+.btn:hover{background:var(--bg3);border-color:#444;}
+.btn-primary{background:var(--accent);color:#0f1a0f;border-color:var(--accent);font-weight:600;}
+.btn-primary:hover{background:var(--accent-d);border-color:var(--accent-d);}
+.btn-danger{border-color:var(--danger);color:var(--danger);}
+.btn-danger:hover{background:rgba(248,113,113,.1);}
+.btn-sm{padding:4px 10px;font-size:12px;}
+.btn:disabled{opacity:.5;cursor:default;}
+
+/* Forms */
+.form-group{display:flex;flex-direction:column;gap:6px;margin-bottom:16px;}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+label{font-size:12px;color:var(--muted);font-weight:500;}
+.field-hint{font-size:11px;color:var(--muted);}
+input,select{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-family:inherit;font-size:13px;padding:9px 12px;transition:border-color .15s;outline:none;}
+input:focus,select:focus{border-color:var(--accent);}
+input[readonly]{opacity:.6;cursor:default;}
+
+/* Modal */
+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:100;}
+.modal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px;width:480px;max-width:90vw;}
+.modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;}
+.modal-header h2{font-size:16px;font-weight:600;}
+.modal-close{background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:4px;}
+.modal-close:hover{color:var(--text);}
+.modal-footer{display:flex;justify-content:flex-end;gap:10px;margin-top:8px;}
+
+/* Empty state */
+.empty-state{background:var(--bg2);border:1px dashed var(--border);border-radius:var(--radius-lg);padding:40px;text-align:center;color:var(--muted);}
+
+/* Action row */
+.action-row{display:flex;gap:6px;}
+
+/* Blocked domains bar */
+.blocked-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);}
+.blocked-row:last-child{border-bottom:none;}
+.blocked-rank{font-size:11px;color:var(--muted);width:24px;text-align:right;flex-shrink:0;}
+.blocked-domain{flex:1;font-size:12px;}
+.blocked-bar-wrap{width:100px;height:4px;background:var(--bg3);border-radius:2px;flex-shrink:0;}
+.blocked-bar{height:4px;background:var(--danger);border-radius:2px;}
+.blocked-count{font-size:11px;color:var(--muted);width:48px;text-align:right;flex-shrink:0;}
+
+/* Signal */
+.signal-good{color:var(--accent);}
+.signal-ok{color:var(--warning);}
+.signal-weak{color:var(--danger);}
+
+/* Alert */
+.alert{padding:10px 14px;border-radius:var(--radius);font-size:13px;margin-bottom:16px;}
+.alert-success{background:rgba(74,222,128,.1);border:1px solid rgba(74,222,128,.3);color:var(--accent);}
+.alert-error{background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.3);color:var(--danger);}
+
+/* Demo banner */
+.demo-banner{position:fixed;bottom:16px;right:16px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:8px 14px;font-size:11px;color:var(--muted);z-index:50;}
+.demo-banner span{color:var(--accent);}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<!-- ── Sidebar ── -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <svg width="24" height="24" viewBox="0 0 32 32" fill="none"><rect width="32" height="32" rx="8" fill="#1a1a2e"/><path d="M8 16 L16 8 L24 16 L20 16 L20 24 L12 24 L12 16 Z" fill="#4ade80" opacity=".9"/></svg>
+    <span>pi-nat64</span>
+  </div>
+  <nav class="sidebar-nav">
+    <a class="nav-item active" data-tab="status">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12l9-9 9 9M5 10v9a1 1 0 001 1h4v-5h4v5h4a1 1 0 001-1v-9"/></svg>Status
+    </a>
+    <a class="nav-item" data-tab="blocking">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Blocking
+    </a>
+    <a class="nav-item" data-tab="clients">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Clients
+    </a>
+    <a class="nav-item" data-tab="portfwd">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 16V4m0 0L3 8m4-4 4 4M17 8v12m0 0 4-4m-4 4-4-4"/></svg>Port Forwarding
+    </a>
+    <a class="nav-item" data-tab="settings">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>Settings
+    </a>
+  </nav>
+  <div class="sidebar-footer">
+    <a class="nav-item logout" style="flex:1">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>Logout
+    </a>
+    <button class="reboot-btn" title="Reboot gateway" onclick="document.getElementById('reboot-modal').style.display='flex'">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+    </button>
+  </div>
+</aside>
+
+<!-- ── Main ── -->
+<main class="main">
+
+<!-- STATUS -->
+<section id="tab-status" class="tab active">
+  <div class="page-header">
+    <h1>Status</h1>
+    <div class="status-indicator"><span class="dot dot-green"></span><span>All services online</span></div>
+  </div>
+  <div class="stat-grid cols3">
+    <div class="stat-card"><div class="stat-label">NAT64 sessions</div><div class="stat-val">142</div><div class="stat-sub">active</div></div>
+    <div class="stat-card"><div class="stat-label">AP clients</div><div class="stat-val">7</div><div class="stat-sub">connected</div></div>
+    <div class="stat-card"><div class="stat-label">Uptime</div><div class="stat-val" style="font-size:22px;padding-top:5px">4d 11h</div><div class="stat-sub">since last reboot</div></div>
+  </div>
+  <div class="section-block">
+    <h2>Services</h2>
+    <div class="service-list">
+      <div class="service-row"><span class="dot dot-green"></span><span class="svc-name">Jool (NAT64)</span><span class="svc-desc">Translates IPv6 ↔ IPv4 traffic</span></div>
+      <div class="service-row"><span class="dot dot-green"></span><span class="svc-name">Unbound (DNS64)</span><span class="svc-desc">Synthesises AAAA records for IPv4-only hosts</span></div>
+      <div class="service-row"><span class="dot dot-green"></span><span class="svc-name">hostapd (AP)</span><span class="svc-desc">Wireless access point — pi-nat64 · ch 6 · WPA2</span></div>
+      <div class="service-row"><span class="dot dot-green"></span><span class="svc-name">Pi-hole (blocking)</span><span class="svc-desc">Network-wide ad and tracker blocking</span></div>
+      <div class="service-row"><span class="dot dot-green"></span><span class="svc-name">dnsmasq (DHCP)</span><span class="svc-desc">IP address assignment on wlan0</span></div>
+      <div class="service-row"><span class="dot dot-green"></span><span class="svc-name">radvd (RA)</span><span class="svc-desc">IPv6 router advertisements on wlan0</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- BLOCKING -->
+<section id="tab-blocking" class="tab">
+  <div class="page-header">
+    <h1>Blocking</h1>
+    <div class="status-indicator"><span class="dot dot-green"></span><span id="ph-status-text">Blocking active</span></div>
+  </div>
+  <div class="stat-grid">
+    <div class="stat-card"><div class="stat-label">Queries today</div><div class="stat-val">48,213</div></div>
+    <div class="stat-card"><div class="stat-label">Blocked today</div><div class="stat-val">9,407</div></div>
+    <div class="stat-card"><div class="stat-label">Block rate</div><div class="stat-val">19.5</div><div class="stat-sub">%</div></div>
+    <div class="stat-card"><div class="stat-label">Blocklist size</div><div class="stat-val" style="font-size:22px;padding-top:5px">189k</div><div class="stat-sub">domains</div></div>
+  </div>
+
+  <!-- Toggle -->
+  <div class="section-block">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0">
+      <h2 style="margin:0">Ad blocking</h2>
+      <button class="btn btn-primary" id="toggle-btn" onclick="toggleBlocking()">Disable blocking</button>
+    </div>
+    <p id="toggle-msg" class="field-hint" style="margin-top:.6rem;min-height:1rem"></p>
+  </div>
+
+  <!-- Top blocked -->
+  <div class="section-block">
+    <h2>Top blocked domains</h2>
+    <div class="service-list">
+      <div class="blocked-row"><span class="blocked-rank">1</span><span class="blocked-domain">doubleclick.net</span><div class="blocked-bar-wrap"><div class="blocked-bar" style="width:100%"></div></div><span class="blocked-count">1,842</span></div>
+      <div class="blocked-row"><span class="blocked-rank">2</span><span class="blocked-domain">googleadservices.com</span><div class="blocked-bar-wrap"><div class="blocked-bar" style="width:80%"></div></div><span class="blocked-count">1,473</span></div>
+      <div class="blocked-row"><span class="blocked-rank">3</span><span class="blocked-domain">pagead2.googlesyndication.com</span><div class="blocked-bar-wrap"><div class="blocked-bar" style="width:68%"></div></div><span class="blocked-count">1,251</span></div>
+      <div class="blocked-row"><span class="blocked-rank">4</span><span class="blocked-domain">ads.facebook.com</span><div class="blocked-bar-wrap"><div class="blocked-bar" style="width:55%"></div></div><span class="blocked-count">1,014</span></div>
+      <div class="blocked-row"><span class="blocked-rank">5</span><span class="blocked-domain">analytics.google.com</span><div class="blocked-bar-wrap"><div class="blocked-bar" style="width:44%"></div></div><span class="blocked-count">810</span></div>
+      <div class="blocked-row"><span class="blocked-rank">6</span><span class="blocked-domain">tracking.tiktok.com</span><div class="blocked-bar-wrap"><div class="blocked-bar" style="width:36%"></div></div><span class="blocked-count">663</span></div>
+    </div>
+  </div>
+
+  <!-- Adlists -->
+  <div class="section-block">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <h2 style="margin:0">Adlists</h2>
+      <button class="btn btn-sm" id="gravity-btn" onclick="demoGravity()">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+        Update gravity
+      </button>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <input type="text" id="adlist-url" placeholder="https://example.com/adlist.txt" style="flex:1">
+      <input type="text" id="adlist-comment" placeholder="Comment (optional)" style="width:180px">
+      <button class="btn btn-primary" onclick="demoAddAdlist()">Add</button>
+    </div>
+    <p id="adlist-msg" class="field-hint" style="min-height:1.2rem;margin-bottom:8px"></p>
+    <div id="adlist-container"></div>
+  </div>
+
+  <!-- Whitelist -->
+  <div class="section-block">
+    <h2>Whitelist</h2>
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <input type="text" id="wl-input" placeholder="e.g. example.com" style="flex:1" onkeydown="if(event.key==='Enter') demoAddWhitelist()">
+      <button class="btn btn-primary" onclick="demoAddWhitelist()">Add</button>
+    </div>
+    <p id="wl-msg" class="field-hint" style="min-height:1.2rem;margin-bottom:8px"></p>
+    <div id="wl-list" class="service-list"></div>
+  </div>
+</section>
+
+<!-- CLIENTS -->
+<section id="tab-clients" class="tab">
+  <div class="page-header">
+    <h1>Clients</h1>
+    <button class="btn" onclick="renderClients()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+      Refresh
+    </button>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Device</th><th>MAC</th><th>IP</th><th>Signal</th><th>Down / Up</th><th>Connected</th><th>Status</th><th></th></tr></thead>
+      <tbody id="clients-body"></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- PORT FORWARDING -->
+<section id="tab-portfwd" class="tab">
+  <div class="page-header">
+    <h1>Port Forwarding</h1>
+    <button class="btn btn-primary" onclick="document.getElementById('add-rule-modal').style.display='flex'">+ Add rule</button>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Name</th><th>Proto</th><th>Ext. port</th><th>Destination</th><th>Dest. port</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        <tr><td>SSH</td><td><span class="pill pill-tcp">TCP</span></td><td>2222</td><td><code>fd00::10</code></td><td>22</td><td><span class="pill pill-on">enabled</span></td><td><div class="action-row"><button class="btn btn-sm">Disable</button><button class="btn btn-sm btn-danger">Delete</button></div></td></tr>
+        <tr><td>Home server</td><td><span class="pill pill-tcp">TCP</span></td><td>8080</td><td><code>fd00::20</code></td><td>80</td><td><span class="pill pill-on">enabled</span></td><td><div class="action-row"><button class="btn btn-sm">Disable</button><button class="btn btn-sm btn-danger">Delete</button></div></td></tr>
+        <tr><td>Wireguard</td><td><span class="pill pill-udp">UDP</span></td><td>51820</td><td><code>fd00::30</code></td><td>51820</td><td><span class="pill pill-off">disabled</span></td><td><div class="action-row"><button class="btn btn-sm">Enable</button><button class="btn btn-sm btn-danger">Delete</button></div></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="modal-backdrop" id="add-rule-modal" style="display:none">
+    <div class="modal">
+      <div class="modal-header"><h2>Add port forwarding rule</h2><button class="modal-close" onclick="document.getElementById('add-rule-modal').style.display='none'">✕</button></div>
+      <div class="form-group"><label>Name</label><input type="text" placeholder="e.g. SSH, Home server"></div>
+      <div class="form-row">
+        <div class="form-group"><label>Protocol</label><select><option>TCP</option><option>UDP</option></select></div>
+        <div class="form-group"><label>External port</label><input type="number" placeholder="2222"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Destination IPv6</label><input type="text" placeholder="fd00::10"></div>
+        <div class="form-group"><label>Destination port</label><input type="number" placeholder="22"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="document.getElementById('add-rule-modal').style.display='none'">Cancel</button>
+        <button class="btn btn-primary" onclick="document.getElementById('add-rule-modal').style.display='none'">Save rule</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SETTINGS -->
+<section id="tab-settings" class="tab">
+  <div class="page-header"><h1>Settings</h1></div>
+  <div id="settings-saved" class="alert alert-success" style="display:none">Settings saved successfully.</div>
+  <div class="section-block">
+    <h2>Access point</h2>
+    <div class="form-group"><label>SSID</label><input type="text" value="pi-nat64"></div>
+    <div class="form-row">
+      <div class="form-group"><label>Channel</label><input type="number" value="6"></div>
+      <div class="form-group"><label>WPA2 passphrase</label><input type="password" placeholder="leave blank to keep current"></div>
+    </div>
+  </div>
+  <div class="section-block">
+    <h2>NAT64 / DNS64</h2>
+    <div class="form-group"><label>Jool / DNS64 prefix</label><input type="text" value="64:ff9b::/96" readonly><span class="field-hint">Change requires editing configs manually and rebooting.</span></div>
+    <div class="form-group"><label>Upstream DNS (IPv6)</label><input type="text" value="2606:4700:4700::1111" readonly></div>
+  </div>
+  <div class="section-block">
+    <h2>Admin password</h2>
+    <div class="form-group"><label>New password</label><input type="password" placeholder="Leave blank to keep current"></div>
+  </div>
+  <button class="btn btn-primary" onclick="showSettingsSaved()">Save settings</button>
+</section>
+
+</main>
+</div>
+
+<!-- Reboot modal -->
+<div class="modal-backdrop" id="reboot-modal" style="display:none">
+  <div class="modal">
+    <div class="modal-header"><h2>Reboot gateway?</h2><button class="modal-close" onclick="document.getElementById('reboot-modal').style.display='none'">✕</button></div>
+    <p style="color:var(--muted);font-size:13px;margin-bottom:20px">The gateway will be unavailable for ~30 seconds. All connected devices will lose internet access during the reboot.</p>
+    <div class="modal-footer">
+      <button class="btn" onclick="document.getElementById('reboot-modal').style.display='none'">Cancel</button>
+      <button class="btn btn-danger">Reboot now</button>
+    </div>
+  </div>
+</div>
+
+<div class="demo-banner">demo — <span>pi-nat64</span> · no live data</div>
+
+<script>
+// ── Tab switching ─────────────────────────────────────────────────────────────
+document.querySelectorAll('.nav-item[data-tab]').forEach(link => {
+  link.addEventListener('click', () => {
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    link.classList.add('active');
+    document.getElementById('tab-' + link.dataset.tab).classList.add('active');
+    if (link.dataset.tab === 'clients') renderClients();
+    if (link.dataset.tab === 'blocking') renderAdlists(); renderWhitelist();
+  });
+});
+
+// ── Blocking toggle ───────────────────────────────────────────────────────────
+let blockingEnabled = true;
+function toggleBlocking() {
+  blockingEnabled = !blockingEnabled;
+  const btn = document.getElementById('toggle-btn');
+  const msg = document.getElementById('toggle-msg');
+  btn.textContent = blockingEnabled ? 'Disable blocking' : 'Enable blocking';
+  msg.style.color = blockingEnabled ? 'var(--accent)' : 'var(--warning)';
+  msg.textContent = blockingEnabled ? 'Blocking enabled.' : 'Blocking disabled — all queries will pass through.';
+  setTimeout(() => { msg.textContent = ''; }, 3000);
+}
+
+// ── Adlists ───────────────────────────────────────────────────────────────────
+let adlists = [
+  { id:1, url:'https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts',          comment:'StevenBlack unified hosts', enabled:true,  domains:129847 },
+  { id:2, url:'https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt',         comment:'AdGuard DNS filter',        enabled:true,  domains:54230  },
+  { id:3, url:'https://raw.githubusercontent.com/PolishFiltersTeam/KADhosts/master/KADhosts.txt', comment:'Polish ad domains',   enabled:false, domains:3810   },
+];
+let nextId = 4;
+
+function renderAdlists() {
+  const c = document.getElementById('adlist-container');
+  if (!c) return;
+  if (!adlists.length) { c.innerHTML = '<p class="field-hint">No adlists configured yet.</p>'; return; }
+  c.innerHTML = `<table class="data-table" style="margin:-1px">
+    <thead><tr><th style="width:42%">URL</th><th>Comment</th><th style="width:90px;text-align:right">Domains</th><th style="width:80px">Status</th><th style="width:120px"></th></tr></thead>
+    <tbody>${adlists.map(l => `<tr>
+      <td style="font-size:11px;word-break:break-all" title="${l.url}">${l.url.length>60 ? l.url.slice(0,60)+'…' : l.url}</td>
+      <td style="font-size:12px;color:var(--muted)">${l.comment || '—'}</td>
+      <td style="text-align:right;font-size:12px">${l.domains.toLocaleString()}</td>
+      <td><span class="pill ${l.enabled?'pill-on':'pill-off'}">${l.enabled?'enabled':'disabled'}</span></td>
+      <td><div class="action-row">
+        <button class="btn btn-sm" onclick="demoToggleAdlist(${l.id})">${l.enabled?'Disable':'Enable'}</button>
+        <button class="btn btn-sm btn-danger" onclick="demoDeleteAdlist(${l.id})">✕</button>
+      </div></td>
+    </tr>`).join('')}</tbody></table>`;
+}
+
+function demoAddAdlist() {
+  const url = document.getElementById('adlist-url').value.trim();
+  const comment = document.getElementById('adlist-comment').value.trim();
+  const msg = document.getElementById('adlist-msg');
+  if (!url || !url.startsWith('http')) {
+    msg.style.color = 'var(--danger)'; msg.textContent = 'Invalid URL — must start with http:// or https://';
+    setTimeout(()=>{msg.textContent=''},4000); return;
+  }
+  adlists.push({ id: nextId++, url, comment, enabled: true, domains: 0 });
+  document.getElementById('adlist-url').value = '';
+  document.getElementById('adlist-comment').value = '';
+  msg.style.color = 'var(--accent)'; msg.textContent = 'Adlist added. Run "Update gravity" to activate it.';
+  setTimeout(()=>{msg.textContent=''},5000);
+  renderAdlists();
+}
+
+function demoToggleAdlist(id) {
+  const l = adlists.find(x=>x.id===id);
+  if (l) l.enabled = !l.enabled;
+  renderAdlists();
+}
+
+function demoDeleteAdlist(id) {
+  adlists = adlists.filter(x=>x.id!==id);
+  const msg = document.getElementById('adlist-msg');
+  msg.style.color = 'var(--accent)'; msg.textContent = 'Adlist removed. Run "Update gravity" to apply.';
+  setTimeout(()=>{msg.textContent=''},5000);
+  renderAdlists();
+}
+
+function demoGravity() {
+  const btn = document.getElementById('gravity-btn');
+  const msg = document.getElementById('adlist-msg');
+  btn.disabled = true; btn.textContent = 'Updating…';
+  msg.style.color = 'var(--muted)'; msg.textContent = 'Gravity update started — this may take a few minutes.';
+  setTimeout(()=>{
+    btn.disabled = false;
+    btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg> Update gravity';
+    msg.textContent = 'Gravity updated.'; msg.style.color='var(--accent)';
+    setTimeout(()=>{msg.textContent=''},3000);
+  }, 3000);
+}
+
+// ── Whitelist ─────────────────────────────────────────────────────────────────
+let whitelist = ['safe.example.com', 'mybank.com'];
+
+function renderWhitelist() {
+  const list = document.getElementById('wl-list');
+  if (!list) return;
+  if (!whitelist.length) { list.innerHTML = '<p class="field-hint">No domains whitelisted yet.</p>'; return; }
+  list.innerHTML = whitelist.map(d => `<div class="service-row">
+    <span class="svc-name" style="flex:1">${d}</span>
+    <button class="btn btn-sm btn-danger" onclick="demoRemoveWhitelist('${d}')">Remove</button>
+  </div>`).join('');
+}
+
+function demoAddWhitelist() {
+  const input = document.getElementById('wl-input');
+  const msg   = document.getElementById('wl-msg');
+  const domain = input.value.trim().toLowerCase();
+  if (!domain) return;
+  if (whitelist.includes(domain)) {
+    msg.style.color='var(--danger)'; msg.textContent='Already whitelisted.';
+    setTimeout(()=>{msg.textContent=''},3000); return;
+  }
+  whitelist.push(domain); input.value='';
+  msg.style.color='var(--accent)'; msg.textContent=domain+' added to whitelist.';
+  setTimeout(()=>{msg.textContent=''},4000);
+  renderWhitelist();
+}
+
+function demoRemoveWhitelist(d) {
+  whitelist = whitelist.filter(x=>x!==d);
+  const msg = document.getElementById('wl-msg');
+  msg.style.color='var(--accent)'; msg.textContent=d+' removed from whitelist.';
+  setTimeout(()=>{msg.textContent=''},4000);
+  renderWhitelist();
+}
+
+// ── Clients ───────────────────────────────────────────────────────────────────
+let clients = [
+  { mac:'a4:c3:f0:11:22:33', hostname:'MacBook-Pro',    ip:'192.168.50.101', signal:-52, tx:214748364,  rx:85983232,  sec:14400, blocked:false, online:true  },
+  { mac:'b8:27:eb:44:55:66', hostname:'iPhone-Alex',    ip:'192.168.50.102', signal:-67, tx:52428800,   rx:31457280,  sec:3720,  blocked:false, online:true  },
+  { mac:'dc:a6:32:77:88:99', hostname:'Pixel-8',        ip:'192.168.50.103', signal:-74, tx:10485760,   rx:5242880,   sec:900,   blocked:false, online:true  },
+  { mac:'00:11:22:aa:bb:cc', hostname:'unknown-device', ip:'192.168.50.104', signal:-81, tx:2097152,    rx:1048576,   sec:120,   blocked:false, online:true  },
+  { mac:'ff:ee:dd:cc:bb:aa', hostname:'OldTablet',      ip:'',               signal:null,tx:null,       rx:null,      sec:null,  blocked:true,  online:false },
+];
+
+function fmtBytes(b) {
+  if(b==null) return '—';
+  if(b<1024) return b+' B';
+  if(b<1048576) return (b/1024).toFixed(1)+' KB';
+  if(b<1073741824) return (b/1048576).toFixed(1)+' MB';
+  return (b/1073741824).toFixed(2)+' GB';
+}
+function fmtSignal(dbm) {
+  if(dbm==null) return '—';
+  const cls = dbm>=-60?'signal-good':dbm>=-70?'signal-ok':'signal-weak';
+  return `<span class="${cls}">${dbm} dBm</span>`;
+}
+function fmtUptime(s) {
+  if(s==null) return '—';
+  if(s<60) return s+'s';
+  if(s<3600) return Math.floor(s/60)+'m '+(s%60)+'s';
+  return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';
+}
+
+function renderClients() {
+  const tbody = document.getElementById('clients-body');
+  if(!tbody) return;
+  tbody.innerHTML = clients.map(c => {
+    const status = c.blocked
+      ? '<span class="pill pill-off">blocked</span>'
+      : c.online
+        ? '<span class="pill pill-on">online</span>'
+        : '<span class="pill pill-muted">offline</span>';
+    const action = c.blocked
+      ? `<button class="btn btn-sm" onclick="demoUnblock('${c.mac}')">Unblock</button>`
+      : `<button class="btn btn-sm btn-danger" onclick="demoBlock('${c.mac}')">Block</button>`;
+    return `<tr>
+      <td>${c.hostname||'—'}</td>
+      <td><code>${c.mac}</code></td>
+      <td><code>${c.ip||'—'}</code></td>
+      <td>${fmtSignal(c.signal)}</td>
+      <td style="font-size:12px">${c.online?fmtBytes(c.rx)+' / '+fmtBytes(c.tx):'—'}</td>
+      <td style="font-size:12px;color:var(--muted)">${fmtUptime(c.sec)}</td>
+      <td>${status}</td><td>${action}</td></tr>`;
+  }).join('');
+}
+
+function demoBlock(mac) {
+  const c = clients.find(x=>x.mac===mac);
+  if(c){c.blocked=true;c.online=false;} renderClients();
+}
+function demoUnblock(mac) {
+  const c = clients.find(x=>x.mac===mac);
+  if(c) c.blocked=false;
+  renderClients();
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+function showSettingsSaved() {
+  const el = document.getElementById('settings-saved');
+  el.style.display='block';
+  setTimeout(()=>{el.style.display='none';},2500);
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+renderAdlists();
+renderWhitelist();
+renderClients();
+</script>
+</body>
+</html>
