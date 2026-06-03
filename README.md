@@ -50,7 +50,7 @@ Device  →  Pi-hole :53  ──── blocked? ──→  NXDOMAIN  (ad/tracker
 
 ```bash
 git clone https://github.com/ALQU-IT/pi-nat64.git
-cd pi-nat64/pi-nat64
+cd pi-nat64
 sudo bash install.sh
 ```
 
