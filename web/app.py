@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import socket as _unix_sock
+import sqlite3
 import subprocess
 import time
 from functools import wraps
@@ -32,13 +33,24 @@ HOSTAPD_CONF        = "/etc/hostapd/hostapd.conf"
 JOOL_PREFIX         = "64:ff9b::/96"
 PORT_RULES_FILE     = "/etc/pi-nat64/port-rules.json"
 ADMIN_PASSWORD_FILE = "/etc/pi-nat64/admin.passwd"
-PIHOLE_SOCKET       = "/run/pihole/FTL.sock"
+PIHOLE_SOCKET        = "/run/pihole/FTL.sock"
+PIHOLE_GRAVITY_DB    = "/etc/pihole/gravity.db"
+BLOCKED_CLIENTS_FILE = "/etc/pi-nat64/blocked-clients.json"
+DNSMASQ_LEASES       = "/var/lib/misc/dnsmasq.leases"
 
-# Allowlists
+# Allowlists / validators
 _VALID_PROTO = {"TCP", "UDP"}
 _IPV6_RE     = re.compile(r'^[0-9a-fA-F:]+$')
+_MAC_RE      = re.compile(r'^([0-9a-f]{2}:){5}[0-9a-f]{2}$')
+_SIGNAL_RE   = re.compile(r'signal:\s+(-?\d+)')
+_URL_RE      = re.compile(r'^https?://[^\s<>"\'`\\{}|\[\]^]{1,2000}$')
 # Detect a valid SHA-256 hex digest (exactly 64 lowercase hex chars)
 _HASH_RE     = re.compile(r'^[0-9a-f]{64}$')
+# Valid hostname / domain label (no wildcards, no shell chars)
+_DOMAIN_RE   = re.compile(
+    r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*'
+    r'[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$'
+)
 
 
 # ---------------------------------------------------------------------------
@@ -559,6 +571,185 @@ def api_pihole_top_blocked():
     return jsonify(_pihole_top_blocked())
 
 
+@app.route("/api/reboot", methods=["POST"])
+@login_required
+@csrf_required
+def api_reboot():
+    # Popen instead of call so the HTTP response is sent before the system goes down
+    subprocess.Popen(["systemctl", "reboot"])
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# API — connected clients
+# ---------------------------------------------------------------------------
+
+def _load_blocked_clients() -> set:
+    if os.path.exists(BLOCKED_CLIENTS_FILE):
+        with open(BLOCKED_CLIENTS_FILE) as f:
+            return set(json.load(f))
+    return set()
+
+
+def _save_blocked_clients(macs: set):
+    os.makedirs(os.path.dirname(BLOCKED_CLIENTS_FILE), exist_ok=True)
+    tmp = BLOCKED_CLIENTS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(sorted(macs), f, indent=2)
+    os.replace(tmp, BLOCKED_CLIENTS_FILE)
+
+
+def _get_stations() -> list:
+    """Parse `iw dev wlan0 station dump` into a list of dicts."""
+    out = _run_safe(["iw", "dev", "wlan0", "station", "dump"], "")
+    stations, cur = [], {}
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("Station "):
+            if cur:
+                stations.append(cur)
+            cur = {"mac": line.split()[1].lower()}
+        elif line.startswith("signal:"):
+            m = _SIGNAL_RE.search(line)
+            if m:
+                cur["signal"] = int(m.group(1))
+        elif line.startswith("tx bytes:"):
+            try:
+                cur["tx_bytes"] = int(line.split()[-1])
+            except ValueError:
+                pass
+        elif line.startswith("rx bytes:"):
+            try:
+                cur["rx_bytes"] = int(line.split()[-1])
+            except ValueError:
+                pass
+        elif line.startswith("connected time:"):
+            try:
+                cur["connected_sec"] = int(line.split()[-2])
+            except (ValueError, IndexError):
+                pass
+    if cur:
+        stations.append(cur)
+    return stations
+
+
+def _get_leases() -> dict:
+    """Return {mac: {ip, hostname}} from dnsmasq leases file."""
+    leases = {}
+    if not os.path.exists(DNSMASQ_LEASES):
+        return leases
+    try:
+        with open(DNSMASQ_LEASES) as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 4:
+                    mac = parts[1].lower()
+                    leases[mac] = {
+                        "ip":       parts[2],
+                        "hostname": parts[3] if parts[3] != "*" else "",
+                    }
+    except OSError:
+        pass
+    return leases
+
+
+@app.route("/api/clients")
+@login_required
+def api_clients():
+    stations = _get_stations()
+    leases   = _get_leases()
+    blocked  = _load_blocked_clients()
+    clients  = []
+
+    for s in stations:
+        mac    = s["mac"]
+        lease  = leases.get(mac, {})
+        clients.append({
+            "mac":           mac,
+            "ip":            lease.get("ip", ""),
+            "hostname":      lease.get("hostname", ""),
+            "signal":        s.get("signal"),
+            "tx_bytes":      s.get("tx_bytes"),
+            "rx_bytes":      s.get("rx_bytes"),
+            "connected_sec": s.get("connected_sec"),
+            "online":        True,
+            "blocked":       mac in blocked,
+        })
+
+    # Include blocked-but-offline clients so they can be unblocked from the UI
+    seen = {c["mac"] for c in clients}
+    for mac in blocked:
+        if mac not in seen:
+            lease = leases.get(mac, {})
+            clients.append({
+                "mac":           mac,
+                "ip":            lease.get("ip", ""),
+                "hostname":      lease.get("hostname", ""),
+                "signal":        None,
+                "tx_bytes":      None,
+                "rx_bytes":      None,
+                "connected_sec": None,
+                "online":        False,
+                "blocked":       True,
+            })
+
+    return jsonify(clients)
+
+
+def _mac_valid(mac: str) -> bool:
+    return bool(_MAC_RE.match(mac))
+
+
+def _apply_client_block(mac: str, block: bool):
+    action = "-I" if block else "-D"
+    for ipt in ("iptables", "ip6tables"):
+        subprocess.call(
+            [ipt, action, "FORWARD", "-m", "mac", "--mac-source", mac, "-j", "DROP"],
+            stderr=subprocess.DEVNULL,
+        )
+
+
+@app.route("/api/clients/block", methods=["POST"])
+@login_required
+@csrf_required
+def api_client_block():
+    data = request.get_json(force=True) or {}
+    mac  = data.get("mac", "").strip().lower()
+    if not _mac_valid(mac):
+        return jsonify({"error": "Invalid MAC address"}), 400
+
+    _apply_client_block(mac, block=True)
+    # Immediately deauthenticate from the AP
+    subprocess.call(
+        ["hostapd_cli", "-i", "wlan0", "deauthenticate", mac],
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.call(["netfilter-persistent", "save"], stderr=subprocess.DEVNULL)
+
+    blocked = _load_blocked_clients()
+    blocked.add(mac)
+    _save_blocked_clients(blocked)
+    return jsonify({"mac": mac, "blocked": True})
+
+
+@app.route("/api/clients/unblock", methods=["POST"])
+@login_required
+@csrf_required
+def api_client_unblock():
+    data = request.get_json(force=True) or {}
+    mac  = data.get("mac", "").strip().lower()
+    if not _mac_valid(mac):
+        return jsonify({"error": "Invalid MAC address"}), 400
+
+    _apply_client_block(mac, block=False)
+    subprocess.call(["netfilter-persistent", "save"], stderr=subprocess.DEVNULL)
+
+    blocked = _load_blocked_clients()
+    blocked.discard(mac)
+    _save_blocked_clients(blocked)
+    return jsonify({"mac": mac, "blocked": False})
+
+
 @app.route("/api/pihole/toggle", methods=["POST"])
 @login_required
 @csrf_required
@@ -571,6 +762,173 @@ def api_pihole_toggle():
         return jsonify({"error": "Failed to toggle Pi-hole blocking"}), 500
     updated = _pihole_stats()
     return jsonify({"status": updated.get("status", "unknown")})
+
+
+# ---------------------------------------------------------------------------
+# Pi-hole whitelist helpers
+# ---------------------------------------------------------------------------
+
+def _pihole_whitelist_read() -> list:
+    """Read exact-match whitelist from Pi-hole's gravity DB (type=0)."""
+    try:
+        with sqlite3.connect(PIHOLE_GRAVITY_DB) as db:
+            rows = db.execute(
+                "SELECT domain FROM domainlist WHERE type=0 ORDER BY domain"
+            ).fetchall()
+        return [r[0] for r in rows]
+    except Exception:
+        return []
+
+
+def _validate_domain(domain: str) -> bool:
+    return bool(domain) and len(domain) <= 253 and bool(_DOMAIN_RE.match(domain))
+
+
+# ---------------------------------------------------------------------------
+# Pi-hole adlist helpers
+# ---------------------------------------------------------------------------
+
+def _adlist_read() -> list:
+    try:
+        with sqlite3.connect(PIHOLE_GRAVITY_DB) as db:
+            rows = db.execute(
+                "SELECT id, address, enabled, comment, COALESCE(number, 0) "
+                "FROM adlist ORDER BY address"
+            ).fetchall()
+        return [
+            {"id": r[0], "url": r[1], "enabled": bool(r[2]),
+             "comment": r[3] or "", "domains": r[4]}
+            for r in rows
+        ]
+    except Exception:
+        return []
+
+
+@app.route("/api/pihole/adlists", methods=["GET"])
+@login_required
+def api_adlists_get():
+    return jsonify(_adlist_read())
+
+
+@app.route("/api/pihole/adlists", methods=["POST"])
+@login_required
+@csrf_required
+def api_adlists_add():
+    data    = request.get_json(force=True) or {}
+    url     = data.get("url", "").strip()
+    comment = data.get("comment", "").strip()[:255]
+
+    if not _URL_RE.match(url):
+        return jsonify({"error": "Invalid URL — must start with http:// or https://"}), 400
+
+    try:
+        with sqlite3.connect(PIHOLE_GRAVITY_DB) as db:
+            db.execute(
+                "INSERT INTO adlist (address, enabled, date_added, comment) VALUES (?, 1, ?, ?)",
+                (url, int(time.time()), comment),
+            )
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "This URL is already in your adlists"}), 409
+    except Exception:
+        return jsonify({"error": "Database error — is Pi-hole installed?"}), 500
+
+    return jsonify({"ok": True, "url": url}), 201
+
+
+@app.route("/api/pihole/adlists", methods=["DELETE"])
+@login_required
+@csrf_required
+def api_adlists_delete():
+    data = request.get_json(force=True) or {}
+    try:
+        adlist_id = int(data["id"])
+    except (KeyError, ValueError, TypeError):
+        return jsonify({"error": "Invalid id"}), 400
+
+    try:
+        with sqlite3.connect(PIHOLE_GRAVITY_DB) as db:
+            db.execute("DELETE FROM adlist WHERE id = ?", (adlist_id,))
+    except Exception:
+        return jsonify({"error": "Database error"}), 500
+
+    return jsonify({"ok": True, "deleted": adlist_id})
+
+
+@app.route("/api/pihole/adlists/toggle", methods=["POST"])
+@login_required
+@csrf_required
+def api_adlists_toggle():
+    data = request.get_json(force=True) or {}
+    try:
+        adlist_id = int(data["id"])
+    except (KeyError, ValueError, TypeError):
+        return jsonify({"error": "Invalid id"}), 400
+
+    try:
+        with sqlite3.connect(PIHOLE_GRAVITY_DB) as db:
+            row = db.execute(
+                "SELECT enabled FROM adlist WHERE id = ?", (adlist_id,)
+            ).fetchone()
+            if not row:
+                return jsonify({"error": "Adlist not found"}), 404
+            new_state = 0 if row[0] else 1
+            db.execute(
+                "UPDATE adlist SET enabled = ?, date_modified = ? WHERE id = ?",
+                (new_state, int(time.time()), adlist_id),
+            )
+    except Exception:
+        return jsonify({"error": "Database error"}), 500
+
+    return jsonify({"ok": True, "id": adlist_id, "enabled": bool(new_state)})
+
+
+@app.route("/api/pihole/gravity", methods=["POST"])
+@login_required
+@csrf_required
+def api_pihole_gravity():
+    """Trigger pihole -g in the background; response returns before it finishes."""
+    subprocess.Popen(
+        ["pihole", "-g"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return jsonify({"ok": True})
+
+
+@app.route("/api/pihole/whitelist", methods=["GET"])
+@login_required
+def api_pihole_whitelist_get():
+    return jsonify(_pihole_whitelist_read())
+
+
+@app.route("/api/pihole/whitelist", methods=["POST"])
+@login_required
+@csrf_required
+def api_pihole_whitelist_add():
+    data   = request.get_json(force=True) or {}
+    domain = data.get("domain", "").strip().lower()
+    if not _validate_domain(domain):
+        return jsonify({"error": "Invalid domain name"}), 400
+    if domain in _pihole_whitelist_read():
+        return jsonify({"error": "Domain already whitelisted"}), 409
+    rc = subprocess.call(["pihole", "-w", domain], stderr=subprocess.DEVNULL)
+    if rc != 0:
+        return jsonify({"error": "pihole -w failed"}), 500
+    return jsonify({"domain": domain}), 201
+
+
+@app.route("/api/pihole/whitelist", methods=["DELETE"])
+@login_required
+@csrf_required
+def api_pihole_whitelist_remove():
+    data   = request.get_json(force=True) or {}
+    domain = data.get("domain", "").strip().lower()
+    if not _validate_domain(domain):
+        return jsonify({"error": "Invalid domain name"}), 400
+    rc = subprocess.call(["pihole", "-w", "-d", domain], stderr=subprocess.DEVNULL)
+    if rc != 0:
+        return jsonify({"error": "pihole -w -d failed"}), 500
+    return jsonify({"deleted": domain})
 
 
 # Security headers middleware

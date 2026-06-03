@@ -28,12 +28,36 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         Blocking
       </a>
+      <a href="#" class="nav-item" data-tab="clients">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Clients
+      </a>
     </nav>
     <div class="sidebar-footer">
       <a href="/logout" class="nav-item logout">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
         Logout
       </a>
+      <button class="reboot-btn" id="reboot-btn" title="Reboot gateway">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+      </button>
+    </div>
+
+    <!-- Reboot confirmation modal -->
+    <div class="modal-backdrop" id="reboot-modal" style="display:none">
+      <div class="modal">
+        <div class="modal-header">
+          <h2>Reboot gateway?</h2>
+          <button class="modal-close" id="close-reboot-modal">✕</button>
+        </div>
+        <p style="color:var(--muted);font-size:13px;margin-bottom:20px">
+          The gateway will be unavailable for ~30 seconds. All connected devices will lose internet access during the reboot.
+        </p>
+        <div class="modal-footer">
+          <button class="btn" id="cancel-reboot">Cancel</button>
+          <button class="btn btn-danger" id="confirm-reboot">Reboot now</button>
+        </div>
+      </div>
     </div>
   </aside>
 
@@ -139,6 +163,72 @@
         <div id="ph-top-list" class="service-list">
           <p class="field-hint">Loading…</p>
         </div>
+      </div>
+
+      <div class="section-block">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <h2 style="margin:0">Adlists</h2>
+          <button class="btn btn-sm" id="gravity-btn" onclick="updateGravity()">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+            Update gravity
+          </button>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <input type="text" id="adlist-url" placeholder="https://example.com/adlist.txt" style="flex:1"
+                 onkeydown="if(event.key==='Enter') addAdlist()">
+          <input type="text" id="adlist-comment" placeholder="Comment (optional)" style="width:180px">
+          <button class="btn btn-primary" onclick="addAdlist()">Add</button>
+        </div>
+        <p id="adlist-msg" class="field-hint" style="min-height:1.2rem;margin-bottom:8px"></p>
+        <div id="adlist-list">
+          <p class="field-hint">Loading…</p>
+        </div>
+      </div>
+
+      <div class="section-block">
+        <h2>Whitelist</h2>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <input type="text" id="wl-input" placeholder="e.g. example.com" style="flex:1"
+                 onkeydown="if(event.key==='Enter') addToWhitelist()">
+          <button class="btn btn-primary" id="wl-add-btn" onclick="addToWhitelist()">Add</button>
+        </div>
+        <p id="wl-msg" class="field-hint" style="min-height:1.2rem;margin-bottom:8px"></p>
+        <div id="wl-list" class="service-list">
+          <p class="field-hint">Loading…</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- CLIENTS TAB -->
+    <section id="tab-clients" class="tab">
+      <div class="page-header">
+        <h1>Clients</h1>
+        <button class="btn" id="clients-refresh-btn" onclick="loadClients()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+          Refresh
+        </button>
+      </div>
+
+      <div id="clients-empty" class="empty-state" style="display:none">
+        <p>No devices connected to the AP.</p>
+      </div>
+
+      <div class="table-wrap" id="clients-table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Device</th>
+              <th>MAC</th>
+              <th>IP</th>
+              <th>Signal</th>
+              <th>Down / Up</th>
+              <th>Connected</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="clients-body"></tbody>
+        </table>
       </div>
     </section>
 

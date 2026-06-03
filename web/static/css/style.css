@@ -71,9 +71,11 @@ a { color: inherit; text-decoration: none; }
 .nav-item.active { background: var(--bg3); color: var(--accent); }
 .nav-item svg    { flex-shrink: 0; }
 
-.sidebar-footer { padding: 8px; border-top: 1px solid var(--border); }
-.logout { color: var(--muted); }
+.sidebar-footer { padding: 8px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 2px; }
+.logout { color: var(--muted); flex: 1; }
 .logout:hover { color: var(--danger); }
+.reboot-btn { background: none; border: none; cursor: pointer; font-family: inherit; color: var(--muted); display: flex; align-items: center; justify-content: center; padding: 9px 10px; border-radius: var(--radius); flex-shrink: 0; transition: background 0.15s, color 0.15s; }
+.reboot-btn:hover { background: var(--bg3); color: var(--warning); }
 
 /* ===== Main ===== */
 .main {
@@ -297,6 +299,11 @@ input[readonly] { opacity: 0.6; cursor: default; }
 .modal-close { background: none; border: none; color: var(--muted); font-size: 18px; cursor: pointer; padding: 4px; }
 .modal-close:hover { color: var(--text); }
 .modal-footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+
+/* ===== Signal strength ===== */
+.signal-good { color: var(--accent); }
+.signal-ok   { color: var(--warning); }
+.signal-weak { color: var(--danger); }
 
 /* ===== Action buttons in table ===== */
 .action-row { display: flex; gap: 6px; }

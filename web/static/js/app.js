@@ -22,6 +22,7 @@ document.querySelectorAll('.nav-item[data-tab]').forEach(link => {
     if (tab === 'portfwd')  loadRules();
     if (tab === 'settings') loadSettings();
     if (tab === 'blocking') loadBlocking();
+    if (tab === 'clients')  loadClients();
   });
 });
 
@@ -244,6 +245,193 @@ async function loadBlocking() {
   } catch (err) {
     console.error('Pi-hole top-blocked fetch failed', err);
   }
+
+  loadWhitelist();
+  loadAdlists();
+}
+
+// ── Adlists ───────────────────────────────────────────────────────────────────
+async function loadAdlists() {
+  const container = document.getElementById('adlist-list');
+  if (!container) return;
+  try {
+    const res   = await fetch('/api/pihole/adlists');
+    const lists = await res.json();
+
+    if (!lists.length) {
+      container.innerHTML = '<p class="field-hint">No adlists configured yet.</p>';
+      return;
+    }
+
+    container.innerHTML = `
+      <table class="data-table" style="margin:-1px">
+        <thead>
+          <tr>
+            <th style="width:42%">URL</th>
+            <th>Comment</th>
+            <th style="width:90px;text-align:right">Domains</th>
+            <th style="width:80px">Status</th>
+            <th style="width:110px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${lists.map(l => `
+          <tr data-id="${l.id}">
+            <td style="font-size:11px;word-break:break-all" title="${escHtml(l.url)}">${escHtml(truncate(l.url, 60))}</td>
+            <td style="font-size:12px;color:var(--muted)">${escHtml(l.comment || '—')}</td>
+            <td style="text-align:right;font-size:12px">${l.domains ? l.domains.toLocaleString() : '—'}</td>
+            <td><span class="pill ${l.enabled ? 'pill-on' : 'pill-off'}">${l.enabled ? 'enabled' : 'disabled'}</span></td>
+            <td>
+              <div class="action-row">
+                <button class="btn btn-sm" onclick="toggleAdlist(${l.id})">${l.enabled ? 'Disable' : 'Enable'}</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteAdlist(${l.id})">✕</button>
+              </div>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`;
+  } catch (err) {
+    container.innerHTML = '<p class="field-hint">Failed to load adlists.</p>';
+  }
+}
+
+async function addAdlist() {
+  const url     = document.getElementById('adlist-url').value.trim();
+  const comment = document.getElementById('adlist-comment').value.trim();
+  const msg     = document.getElementById('adlist-msg');
+  if (!url) return;
+
+  const res = await fetch('/api/pihole/adlists', {
+    method: 'POST',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ url, comment }),
+  });
+  const d = await res.json();
+
+  if (res.ok) {
+    document.getElementById('adlist-url').value     = '';
+    document.getElementById('adlist-comment').value = '';
+    msg.style.color   = 'var(--accent)';
+    msg.textContent   = 'Adlist added. Run "Update gravity" to activate it.';
+    loadAdlists();
+  } else {
+    msg.style.color = 'var(--danger)';
+    msg.textContent = d.error || 'Failed to add adlist.';
+  }
+  setTimeout(() => { msg.textContent = ''; }, 5000);
+}
+
+async function deleteAdlist(id) {
+  const msg = document.getElementById('adlist-msg');
+  const res = await fetch('/api/pihole/adlists', {
+    method: 'DELETE',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ id }),
+  });
+  if (res.ok) {
+    msg.style.color = 'var(--accent)';
+    msg.textContent = 'Adlist removed. Run "Update gravity" to apply.';
+    setTimeout(() => { msg.textContent = ''; }, 5000);
+    loadAdlists();
+  }
+}
+
+async function toggleAdlist(id) {
+  const res = await fetch('/api/pihole/adlists/toggle', {
+    method: 'POST',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ id }),
+  });
+  if (res.ok) loadAdlists();
+}
+
+async function updateGravity() {
+  const btn = document.getElementById('gravity-btn');
+  const msg = document.getElementById('adlist-msg');
+  btn.disabled    = true;
+  btn.textContent = 'Updating…';
+  msg.style.color = 'var(--muted)';
+  msg.textContent = 'Gravity update started — this may take a few minutes.';
+
+  await fetch('/api/pihole/gravity', { method: 'POST', headers: csrfHeaders() });
+
+  // Re-enable after 60 s (enough time for gravity to finish on most systems)
+  setTimeout(() => {
+    btn.disabled    = false;
+    btn.innerHTML   = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg> Update gravity';
+    msg.textContent = '';
+    loadAdlists();   // refresh domain counts
+  }, 60000);
+}
+
+function truncate(s, n) {
+  return s.length > n ? s.slice(0, n) + '…' : s;
+}
+
+// ── Whitelist ─────────────────────────────────────────────────────────────────
+async function loadWhitelist() {
+  const list = document.getElementById('wl-list');
+  if (!list) return;
+  try {
+    const res = await fetch('/api/pihole/whitelist');
+    const domains = await res.json();
+    if (!domains.length) {
+      list.innerHTML = '<p class="field-hint">No domains whitelisted yet.</p>';
+      return;
+    }
+    list.innerHTML = domains.map(d => `
+      <div class="service-row">
+        <span class="svc-name" style="flex:1">${escHtml(d)}</span>
+        <button class="btn btn-sm btn-danger" onclick="removeFromWhitelist('${escHtml(d)}')">Remove</button>
+      </div>`).join('');
+  } catch (err) {
+    list.innerHTML = '<p class="field-hint">Failed to load whitelist.</p>';
+  }
+}
+
+async function addToWhitelist() {
+  const input = document.getElementById('wl-input');
+  const msg   = document.getElementById('wl-msg');
+  const domain = input.value.trim().toLowerCase();
+  if (!domain) return;
+
+  const res = await fetch('/api/pihole/whitelist', {
+    method: 'POST',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ domain }),
+  });
+  const d = await res.json();
+
+  if (res.ok) {
+    input.value = '';
+    msg.style.color = 'var(--accent)';
+    msg.textContent = `${domain} added to whitelist.`;
+    loadWhitelist();
+  } else {
+    msg.style.color = 'var(--danger)';
+    msg.textContent = d.error || 'Failed to add domain.';
+  }
+  setTimeout(() => { msg.textContent = ''; }, 4000);
+}
+
+async function removeFromWhitelist(domain) {
+  const msg = document.getElementById('wl-msg');
+  const res = await fetch('/api/pihole/whitelist', {
+    method: 'DELETE',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ domain }),
+  });
+  const d = await res.json();
+
+  if (res.ok) {
+    msg.style.color = 'var(--accent)';
+    msg.textContent = `${domain} removed from whitelist.`;
+    loadWhitelist();
+  } else {
+    msg.style.color = 'var(--danger)';
+    msg.textContent = d.error || 'Failed to remove domain.';
+  }
+  setTimeout(() => { msg.textContent = ''; }, 4000);
 }
 
 document.getElementById('pihole-toggle-btn')?.addEventListener('click', async () => {
@@ -264,6 +452,144 @@ document.getElementById('pihole-toggle-btn')?.addEventListener('click', async ()
 function escHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+
+// ── Clients ───────────────────────────────────────────────────────────────────
+async function loadClients() {
+  try {
+    const res     = await fetch('/api/clients');
+    const clients = await res.json();
+    const tbody   = document.getElementById('clients-body');
+    const empty   = document.getElementById('clients-empty');
+    const wrap    = document.getElementById('clients-table-wrap');
+    if (!tbody) return;
+
+    if (!clients.length) {
+      if (empty) empty.style.display = 'block';
+      if (wrap)  wrap.style.display  = 'none';
+      return;
+    }
+    if (empty) empty.style.display = 'none';
+    if (wrap)  wrap.style.display  = 'block';
+
+    tbody.innerHTML = clients.map(c => {
+      const name    = escHtml(c.hostname || '—');
+      const ip      = escHtml(c.ip       || '—');
+      const signal  = fmtSignal(c.signal);
+      const traffic = c.online
+        ? `${fmtBytes(c.rx_bytes)} / ${fmtBytes(c.tx_bytes)}`
+        : '—';
+      const uptime  = c.online ? fmtUptime(c.connected_sec) : '—';
+      const status  = c.blocked
+        ? '<span class="pill pill-off">blocked</span>'
+        : c.online
+          ? '<span class="pill pill-on">online</span>'
+          : '<span class="pill" style="background:rgba(136,136,160,0.15);color:var(--muted)">offline</span>';
+      const action  = c.blocked
+        ? `<button class="btn btn-sm" onclick="unblockClient('${escHtml(c.mac)}')">Unblock</button>`
+        : `<button class="btn btn-sm btn-danger" onclick="blockClient('${escHtml(c.mac)}')">Block</button>`;
+
+      return `<tr>
+        <td>${name}</td>
+        <td><code>${escHtml(c.mac)}</code></td>
+        <td><code>${ip}</code></td>
+        <td>${signal}</td>
+        <td style="font-size:12px">${traffic}</td>
+        <td style="font-size:12px;color:var(--muted)">${uptime}</td>
+        <td>${status}</td>
+        <td>${action}</td>
+      </tr>`;
+    }).join('');
+  } catch (err) {
+    console.error('Clients fetch failed', err);
+  }
+}
+
+async function blockClient(mac) {
+  const res = await fetch('/api/clients/block', {
+    method: 'POST',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ mac }),
+  });
+  if (res.ok) loadClients();
+  else {
+    const d = await res.json();
+    alert(d.error || 'Failed to block client.');
+  }
+}
+
+async function unblockClient(mac) {
+  const res = await fetch('/api/clients/unblock', {
+    method: 'POST',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ mac }),
+  });
+  if (res.ok) loadClients();
+  else {
+    const d = await res.json();
+    alert(d.error || 'Failed to unblock client.');
+  }
+}
+
+function fmtSignal(dbm) {
+  if (dbm == null) return '—';
+  const cls = dbm >= -60 ? 'signal-good' : dbm >= -70 ? 'signal-ok' : 'signal-weak';
+  return `<span class="${cls}">${dbm} dBm</span>`;
+}
+
+function fmtBytes(b) {
+  if (b == null) return '—';
+  if (b < 1024)       return b + ' B';
+  if (b < 1048576)    return (b / 1024).toFixed(1) + ' KB';
+  if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
+  return (b / 1073741824).toFixed(2) + ' GB';
+}
+
+function fmtUptime(sec) {
+  if (sec == null) return '—';
+  if (sec < 60)    return sec + 's';
+  if (sec < 3600)  return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  return h + 'h ' + m + 'm';
+}
+
+// ── Reboot ───────────────────────────────────────────────────────────────────
+document.getElementById('reboot-btn')?.addEventListener('click', () => {
+  document.getElementById('reboot-modal').style.display = 'flex';
+});
+
+['close-reboot-modal', 'cancel-reboot'].forEach(id => {
+  document.getElementById(id)?.addEventListener('click', () => {
+    document.getElementById('reboot-modal').style.display = 'none';
+  });
+});
+
+document.getElementById('confirm-reboot')?.addEventListener('click', async () => {
+  const btn = document.getElementById('confirm-reboot');
+  btn.textContent = 'Rebooting…';
+  btn.disabled = true;
+  document.getElementById('cancel-reboot').disabled = true;
+
+  try {
+    await fetch('/api/reboot', { method: 'POST', headers: csrfHeaders() });
+  } catch (_) { /* connection drop is expected */ }
+
+  document.getElementById('reboot-modal').innerHTML = `
+    <div class="modal" style="text-align:center">
+      <p style="font-size:15px;font-weight:600;margin-bottom:10px">Rebooting…</p>
+      <p class="field-hint">The page will reload automatically when the gateway comes back online.</p>
+    </div>`;
+
+  // Wait 20 s for shutdown, then poll until /api/status responds again
+  setTimeout(() => {
+    const poll = setInterval(async () => {
+      try {
+        const res = await fetch('/api/status');
+        if (res.ok) { clearInterval(poll); location.reload(); }
+      } catch (_) {}
+    }, 3000);
+  }, 20000);
+});
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 loadStatus();
