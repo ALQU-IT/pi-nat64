@@ -244,6 +244,74 @@ async function loadBlocking() {
   } catch (err) {
     console.error('Pi-hole top-blocked fetch failed', err);
   }
+
+  loadWhitelist();
+}
+
+// ── Whitelist ─────────────────────────────────────────────────────────────────
+async function loadWhitelist() {
+  const list = document.getElementById('wl-list');
+  if (!list) return;
+  try {
+    const res = await fetch('/api/pihole/whitelist');
+    const domains = await res.json();
+    if (!domains.length) {
+      list.innerHTML = '<p class="field-hint">No domains whitelisted yet.</p>';
+      return;
+    }
+    list.innerHTML = domains.map(d => `
+      <div class="service-row">
+        <span class="svc-name" style="flex:1">${escHtml(d)}</span>
+        <button class="btn btn-sm btn-danger" onclick="removeFromWhitelist('${escHtml(d)}')">Remove</button>
+      </div>`).join('');
+  } catch (err) {
+    list.innerHTML = '<p class="field-hint">Failed to load whitelist.</p>';
+  }
+}
+
+async function addToWhitelist() {
+  const input = document.getElementById('wl-input');
+  const msg   = document.getElementById('wl-msg');
+  const domain = input.value.trim().toLowerCase();
+  if (!domain) return;
+
+  const res = await fetch('/api/pihole/whitelist', {
+    method: 'POST',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ domain }),
+  });
+  const d = await res.json();
+
+  if (res.ok) {
+    input.value = '';
+    msg.style.color = 'var(--accent)';
+    msg.textContent = `${domain} added to whitelist.`;
+    loadWhitelist();
+  } else {
+    msg.style.color = 'var(--danger)';
+    msg.textContent = d.error || 'Failed to add domain.';
+  }
+  setTimeout(() => { msg.textContent = ''; }, 4000);
+}
+
+async function removeFromWhitelist(domain) {
+  const msg = document.getElementById('wl-msg');
+  const res = await fetch('/api/pihole/whitelist', {
+    method: 'DELETE',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ domain }),
+  });
+  const d = await res.json();
+
+  if (res.ok) {
+    msg.style.color = 'var(--accent)';
+    msg.textContent = `${domain} removed from whitelist.`;
+    loadWhitelist();
+  } else {
+    msg.style.color = 'var(--danger)';
+    msg.textContent = d.error || 'Failed to remove domain.';
+  }
+  setTimeout(() => { msg.textContent = ''; }, 4000);
 }
 
 document.getElementById('pihole-toggle-btn')?.addEventListener('click', async () => {

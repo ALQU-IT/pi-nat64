@@ -140,6 +140,19 @@
           <p class="field-hint">Loading…</p>
         </div>
       </div>
+
+      <div class="section-block">
+        <h2>Whitelist</h2>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <input type="text" id="wl-input" placeholder="e.g. example.com" style="flex:1"
+                 onkeydown="if(event.key==='Enter') addToWhitelist()">
+          <button class="btn btn-primary" id="wl-add-btn" onclick="addToWhitelist()">Add</button>
+        </div>
+        <p id="wl-msg" class="field-hint" style="min-height:1.2rem;margin-bottom:8px"></p>
+        <div id="wl-list" class="service-list">
+          <p class="field-hint">Loading…</p>
+        </div>
+      </div>
     </section>
 
     <!-- PORT FORWARDING TAB -->

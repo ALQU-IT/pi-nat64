@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import socket as _unix_sock
+import sqlite3
 import subprocess
 import time
 from functools import wraps
@@ -33,12 +34,18 @@ JOOL_PREFIX         = "64:ff9b::/96"
 PORT_RULES_FILE     = "/etc/pi-nat64/port-rules.json"
 ADMIN_PASSWORD_FILE = "/etc/pi-nat64/admin.passwd"
 PIHOLE_SOCKET       = "/run/pihole/FTL.sock"
+PIHOLE_GRAVITY_DB   = "/etc/pihole/gravity.db"
 
-# Allowlists
+# Allowlists / validators
 _VALID_PROTO = {"TCP", "UDP"}
 _IPV6_RE     = re.compile(r'^[0-9a-fA-F:]+$')
 # Detect a valid SHA-256 hex digest (exactly 64 lowercase hex chars)
 _HASH_RE     = re.compile(r'^[0-9a-f]{64}$')
+# Valid hostname / domain label (no wildcards, no shell chars)
+_DOMAIN_RE   = re.compile(
+    r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*'
+    r'[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$'
+)
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +578,62 @@ def api_pihole_toggle():
         return jsonify({"error": "Failed to toggle Pi-hole blocking"}), 500
     updated = _pihole_stats()
     return jsonify({"status": updated.get("status", "unknown")})
+
+
+# ---------------------------------------------------------------------------
+# Pi-hole whitelist helpers
+# ---------------------------------------------------------------------------
+
+def _pihole_whitelist_read() -> list:
+    """Read exact-match whitelist from Pi-hole's gravity DB (type=0)."""
+    try:
+        with sqlite3.connect(PIHOLE_GRAVITY_DB) as db:
+            rows = db.execute(
+                "SELECT domain FROM domainlist WHERE type=0 ORDER BY domain"
+            ).fetchall()
+        return [r[0] for r in rows]
+    except Exception:
+        return []
+
+
+def _validate_domain(domain: str) -> bool:
+    return bool(domain) and len(domain) <= 253 and bool(_DOMAIN_RE.match(domain))
+
+
+@app.route("/api/pihole/whitelist", methods=["GET"])
+@login_required
+def api_pihole_whitelist_get():
+    return jsonify(_pihole_whitelist_read())
+
+
+@app.route("/api/pihole/whitelist", methods=["POST"])
+@login_required
+@csrf_required
+def api_pihole_whitelist_add():
+    data   = request.get_json(force=True) or {}
+    domain = data.get("domain", "").strip().lower()
+    if not _validate_domain(domain):
+        return jsonify({"error": "Invalid domain name"}), 400
+    if domain in _pihole_whitelist_read():
+        return jsonify({"error": "Domain already whitelisted"}), 409
+    rc = subprocess.call(["pihole", "-w", domain], stderr=subprocess.DEVNULL)
+    if rc != 0:
+        return jsonify({"error": "pihole -w failed"}), 500
+    return jsonify({"domain": domain}), 201
+
+
+@app.route("/api/pihole/whitelist", methods=["DELETE"])
+@login_required
+@csrf_required
+def api_pihole_whitelist_remove():
+    data   = request.get_json(force=True) or {}
+    domain = data.get("domain", "").strip().lower()
+    if not _validate_domain(domain):
+        return jsonify({"error": "Invalid domain name"}), 400
+    rc = subprocess.call(["pihole", "-w", "-d", domain], stderr=subprocess.DEVNULL)
+    if rc != 0:
+        return jsonify({"error": "pihole -w -d failed"}), 500
+    return jsonify({"deleted": domain})
 
 
 # Security headers middleware
