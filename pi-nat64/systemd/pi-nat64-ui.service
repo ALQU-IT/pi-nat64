@@ -1,6 +1,7 @@
 [Unit]
 Description=pi-nat64 Web UI
-After=network.target hostapd.service unbound.service
+After=network.target hostapd.service unbound.service pihole-FTL.service
+Wants=pihole-FTL.service
 
 [Service]
 Type=simple

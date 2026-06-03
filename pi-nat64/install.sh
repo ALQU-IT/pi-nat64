@@ -276,7 +276,8 @@ pip3 install flask --break-system-packages -q
 cat > /etc/systemd/system/pi-nat64-ui.service <<EOF
 [Unit]
 Description=pi-nat64 Web UI
-After=network.target hostapd.service unbound.service
+After=network.target hostapd.service unbound.service pihole-FTL.service
+Wants=pihole-FTL.service
 
 [Service]
 Type=simple
