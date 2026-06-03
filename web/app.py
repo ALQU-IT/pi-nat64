@@ -43,6 +43,7 @@ _VALID_PROTO = {"TCP", "UDP"}
 _IPV6_RE     = re.compile(r'^[0-9a-fA-F:]+$')
 _MAC_RE      = re.compile(r'^([0-9a-f]{2}:){5}[0-9a-f]{2}$')
 _SIGNAL_RE   = re.compile(r'signal:\s+(-?\d+)')
+_URL_RE      = re.compile(r'^https?://[^\s<>"\'`\\{}|\[\]^]{1,2000}$')
 # Detect a valid SHA-256 hex digest (exactly 64 lowercase hex chars)
 _HASH_RE     = re.compile(r'^[0-9a-f]{64}$')
 # Valid hostname / domain label (no wildcards, no shell chars)
@@ -781,6 +782,117 @@ def _pihole_whitelist_read() -> list:
 
 def _validate_domain(domain: str) -> bool:
     return bool(domain) and len(domain) <= 253 and bool(_DOMAIN_RE.match(domain))
+
+
+# ---------------------------------------------------------------------------
+# Pi-hole adlist helpers
+# ---------------------------------------------------------------------------
+
+def _adlist_read() -> list:
+    try:
+        with sqlite3.connect(PIHOLE_GRAVITY_DB) as db:
+            rows = db.execute(
+                "SELECT id, address, enabled, comment, COALESCE(number, 0) "
+                "FROM adlist ORDER BY address"
+            ).fetchall()
+        return [
+            {"id": r[0], "url": r[1], "enabled": bool(r[2]),
+             "comment": r[3] or "", "domains": r[4]}
+            for r in rows
+        ]
+    except Exception:
+        return []
+
+
+@app.route("/api/pihole/adlists", methods=["GET"])
+@login_required
+def api_adlists_get():
+    return jsonify(_adlist_read())
+
+
+@app.route("/api/pihole/adlists", methods=["POST"])
+@login_required
+@csrf_required
+def api_adlists_add():
+    data    = request.get_json(force=True) or {}
+    url     = data.get("url", "").strip()
+    comment = data.get("comment", "").strip()[:255]
+
+    if not _URL_RE.match(url):
+        return jsonify({"error": "Invalid URL — must start with http:// or https://"}), 400
+
+    try:
+        with sqlite3.connect(PIHOLE_GRAVITY_DB) as db:
+            db.execute(
+                "INSERT INTO adlist (address, enabled, date_added, comment) VALUES (?, 1, ?, ?)",
+                (url, int(time.time()), comment),
+            )
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "This URL is already in your adlists"}), 409
+    except Exception:
+        return jsonify({"error": "Database error — is Pi-hole installed?"}), 500
+
+    return jsonify({"ok": True, "url": url}), 201
+
+
+@app.route("/api/pihole/adlists", methods=["DELETE"])
+@login_required
+@csrf_required
+def api_adlists_delete():
+    data = request.get_json(force=True) or {}
+    try:
+        adlist_id = int(data["id"])
+    except (KeyError, ValueError, TypeError):
+        return jsonify({"error": "Invalid id"}), 400
+
+    try:
+        with sqlite3.connect(PIHOLE_GRAVITY_DB) as db:
+            db.execute("DELETE FROM adlist WHERE id = ?", (adlist_id,))
+    except Exception:
+        return jsonify({"error": "Database error"}), 500
+
+    return jsonify({"ok": True, "deleted": adlist_id})
+
+
+@app.route("/api/pihole/adlists/toggle", methods=["POST"])
+@login_required
+@csrf_required
+def api_adlists_toggle():
+    data = request.get_json(force=True) or {}
+    try:
+        adlist_id = int(data["id"])
+    except (KeyError, ValueError, TypeError):
+        return jsonify({"error": "Invalid id"}), 400
+
+    try:
+        with sqlite3.connect(PIHOLE_GRAVITY_DB) as db:
+            row = db.execute(
+                "SELECT enabled FROM adlist WHERE id = ?", (adlist_id,)
+            ).fetchone()
+            if not row:
+                return jsonify({"error": "Adlist not found"}), 404
+            new_state = 0 if row[0] else 1
+            db.execute(
+                "UPDATE adlist SET enabled = ?, date_modified = ? WHERE id = ?",
+                (new_state, int(time.time()), adlist_id),
+            )
+    except Exception:
+        return jsonify({"error": "Database error"}), 500
+
+    return jsonify({"ok": True, "id": adlist_id, "enabled": bool(new_state)})
+
+
+@app.route("/api/pihole/gravity", methods=["POST"])
+@login_required
+@csrf_required
+def api_pihole_gravity():
+    """Trigger pihole -g in the background; response returns before it finishes."""
+    subprocess.Popen(
+        ["pihole", "-g"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return jsonify({"ok": True})
 
 
 @app.route("/api/pihole/whitelist", methods=["GET"])

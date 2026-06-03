@@ -247,6 +247,125 @@ async function loadBlocking() {
   }
 
   loadWhitelist();
+  loadAdlists();
+}
+
+// ── Adlists ───────────────────────────────────────────────────────────────────
+async function loadAdlists() {
+  const container = document.getElementById('adlist-list');
+  if (!container) return;
+  try {
+    const res   = await fetch('/api/pihole/adlists');
+    const lists = await res.json();
+
+    if (!lists.length) {
+      container.innerHTML = '<p class="field-hint">No adlists configured yet.</p>';
+      return;
+    }
+
+    container.innerHTML = `
+      <table class="data-table" style="margin:-1px">
+        <thead>
+          <tr>
+            <th style="width:42%">URL</th>
+            <th>Comment</th>
+            <th style="width:90px;text-align:right">Domains</th>
+            <th style="width:80px">Status</th>
+            <th style="width:110px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${lists.map(l => `
+          <tr data-id="${l.id}">
+            <td style="font-size:11px;word-break:break-all" title="${escHtml(l.url)}">${escHtml(truncate(l.url, 60))}</td>
+            <td style="font-size:12px;color:var(--muted)">${escHtml(l.comment || '—')}</td>
+            <td style="text-align:right;font-size:12px">${l.domains ? l.domains.toLocaleString() : '—'}</td>
+            <td><span class="pill ${l.enabled ? 'pill-on' : 'pill-off'}">${l.enabled ? 'enabled' : 'disabled'}</span></td>
+            <td>
+              <div class="action-row">
+                <button class="btn btn-sm" onclick="toggleAdlist(${l.id})">${l.enabled ? 'Disable' : 'Enable'}</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteAdlist(${l.id})">✕</button>
+              </div>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`;
+  } catch (err) {
+    container.innerHTML = '<p class="field-hint">Failed to load adlists.</p>';
+  }
+}
+
+async function addAdlist() {
+  const url     = document.getElementById('adlist-url').value.trim();
+  const comment = document.getElementById('adlist-comment').value.trim();
+  const msg     = document.getElementById('adlist-msg');
+  if (!url) return;
+
+  const res = await fetch('/api/pihole/adlists', {
+    method: 'POST',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ url, comment }),
+  });
+  const d = await res.json();
+
+  if (res.ok) {
+    document.getElementById('adlist-url').value     = '';
+    document.getElementById('adlist-comment').value = '';
+    msg.style.color   = 'var(--accent)';
+    msg.textContent   = 'Adlist added. Run "Update gravity" to activate it.';
+    loadAdlists();
+  } else {
+    msg.style.color = 'var(--danger)';
+    msg.textContent = d.error || 'Failed to add adlist.';
+  }
+  setTimeout(() => { msg.textContent = ''; }, 5000);
+}
+
+async function deleteAdlist(id) {
+  const msg = document.getElementById('adlist-msg');
+  const res = await fetch('/api/pihole/adlists', {
+    method: 'DELETE',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ id }),
+  });
+  if (res.ok) {
+    msg.style.color = 'var(--accent)';
+    msg.textContent = 'Adlist removed. Run "Update gravity" to apply.';
+    setTimeout(() => { msg.textContent = ''; }, 5000);
+    loadAdlists();
+  }
+}
+
+async function toggleAdlist(id) {
+  const res = await fetch('/api/pihole/adlists/toggle', {
+    method: 'POST',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ id }),
+  });
+  if (res.ok) loadAdlists();
+}
+
+async function updateGravity() {
+  const btn = document.getElementById('gravity-btn');
+  const msg = document.getElementById('adlist-msg');
+  btn.disabled    = true;
+  btn.textContent = 'Updating…';
+  msg.style.color = 'var(--muted)';
+  msg.textContent = 'Gravity update started — this may take a few minutes.';
+
+  await fetch('/api/pihole/gravity', { method: 'POST', headers: csrfHeaders() });
+
+  // Re-enable after 60 s (enough time for gravity to finish on most systems)
+  setTimeout(() => {
+    btn.disabled    = false;
+    btn.innerHTML   = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg> Update gravity';
+    msg.textContent = '';
+    loadAdlists();   // refresh domain counts
+  }, 60000);
+}
+
+function truncate(s, n) {
+  return s.length > n ? s.slice(0, n) + '…' : s;
 }
 
 // ── Whitelist ─────────────────────────────────────────────────────────────────

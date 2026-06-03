@@ -166,6 +166,26 @@
       </div>
 
       <div class="section-block">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <h2 style="margin:0">Adlists</h2>
+          <button class="btn btn-sm" id="gravity-btn" onclick="updateGravity()">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+            Update gravity
+          </button>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <input type="text" id="adlist-url" placeholder="https://example.com/adlist.txt" style="flex:1"
+                 onkeydown="if(event.key==='Enter') addAdlist()">
+          <input type="text" id="adlist-comment" placeholder="Comment (optional)" style="width:180px">
+          <button class="btn btn-primary" onclick="addAdlist()">Add</button>
+        </div>
+        <p id="adlist-msg" class="field-hint" style="min-height:1.2rem;margin-bottom:8px"></p>
+        <div id="adlist-list">
+          <p class="field-hint">Loading…</p>
+        </div>
+      </div>
+
+      <div class="section-block">
         <h2>Whitelist</h2>
         <div style="display:flex;gap:8px;margin-bottom:8px">
           <input type="text" id="wl-input" placeholder="e.g. example.com" style="flex:1"
