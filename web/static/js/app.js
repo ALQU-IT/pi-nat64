@@ -22,6 +22,7 @@ document.querySelectorAll('.nav-item[data-tab]').forEach(link => {
     if (tab === 'portfwd')  loadRules();
     if (tab === 'settings') loadSettings();
     if (tab === 'blocking') loadBlocking();
+    if (tab === 'clients')  loadClients();
   });
 });
 
@@ -331,6 +332,106 @@ document.getElementById('pihole-toggle-btn')?.addEventListener('click', async ()
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function escHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ── Clients ───────────────────────────────────────────────────────────────────
+async function loadClients() {
+  try {
+    const res     = await fetch('/api/clients');
+    const clients = await res.json();
+    const tbody   = document.getElementById('clients-body');
+    const empty   = document.getElementById('clients-empty');
+    const wrap    = document.getElementById('clients-table-wrap');
+    if (!tbody) return;
+
+    if (!clients.length) {
+      if (empty) empty.style.display = 'block';
+      if (wrap)  wrap.style.display  = 'none';
+      return;
+    }
+    if (empty) empty.style.display = 'none';
+    if (wrap)  wrap.style.display  = 'block';
+
+    tbody.innerHTML = clients.map(c => {
+      const name    = escHtml(c.hostname || '—');
+      const ip      = escHtml(c.ip       || '—');
+      const signal  = fmtSignal(c.signal);
+      const traffic = c.online
+        ? `${fmtBytes(c.rx_bytes)} / ${fmtBytes(c.tx_bytes)}`
+        : '—';
+      const uptime  = c.online ? fmtUptime(c.connected_sec) : '—';
+      const status  = c.blocked
+        ? '<span class="pill pill-off">blocked</span>'
+        : c.online
+          ? '<span class="pill pill-on">online</span>'
+          : '<span class="pill" style="background:rgba(136,136,160,0.15);color:var(--muted)">offline</span>';
+      const action  = c.blocked
+        ? `<button class="btn btn-sm" onclick="unblockClient('${escHtml(c.mac)}')">Unblock</button>`
+        : `<button class="btn btn-sm btn-danger" onclick="blockClient('${escHtml(c.mac)}')">Block</button>`;
+
+      return `<tr>
+        <td>${name}</td>
+        <td><code>${escHtml(c.mac)}</code></td>
+        <td><code>${ip}</code></td>
+        <td>${signal}</td>
+        <td style="font-size:12px">${traffic}</td>
+        <td style="font-size:12px;color:var(--muted)">${uptime}</td>
+        <td>${status}</td>
+        <td>${action}</td>
+      </tr>`;
+    }).join('');
+  } catch (err) {
+    console.error('Clients fetch failed', err);
+  }
+}
+
+async function blockClient(mac) {
+  const res = await fetch('/api/clients/block', {
+    method: 'POST',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ mac }),
+  });
+  if (res.ok) loadClients();
+  else {
+    const d = await res.json();
+    alert(d.error || 'Failed to block client.');
+  }
+}
+
+async function unblockClient(mac) {
+  const res = await fetch('/api/clients/unblock', {
+    method: 'POST',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ mac }),
+  });
+  if (res.ok) loadClients();
+  else {
+    const d = await res.json();
+    alert(d.error || 'Failed to unblock client.');
+  }
+}
+
+function fmtSignal(dbm) {
+  if (dbm == null) return '—';
+  const cls = dbm >= -60 ? 'signal-good' : dbm >= -70 ? 'signal-ok' : 'signal-weak';
+  return `<span class="${cls}">${dbm} dBm</span>`;
+}
+
+function fmtBytes(b) {
+  if (b == null) return '—';
+  if (b < 1024)       return b + ' B';
+  if (b < 1048576)    return (b / 1024).toFixed(1) + ' KB';
+  if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
+  return (b / 1073741824).toFixed(2) + ' GB';
+}
+
+function fmtUptime(sec) {
+  if (sec == null) return '—';
+  if (sec < 60)    return sec + 's';
+  if (sec < 3600)  return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  return h + 'h ' + m + 'm';
 }
 
 // ── Reboot ───────────────────────────────────────────────────────────────────

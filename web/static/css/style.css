@@ -300,6 +300,11 @@ input[readonly] { opacity: 0.6; cursor: default; }
 .modal-close:hover { color: var(--text); }
 .modal-footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
 
+/* ===== Signal strength ===== */
+.signal-good { color: var(--accent); }
+.signal-ok   { color: var(--warning); }
+.signal-weak { color: var(--danger); }
+
 /* ===== Action buttons in table ===== */
 .action-row { display: flex; gap: 6px; }
 

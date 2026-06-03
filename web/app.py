@@ -33,12 +33,16 @@ HOSTAPD_CONF        = "/etc/hostapd/hostapd.conf"
 JOOL_PREFIX         = "64:ff9b::/96"
 PORT_RULES_FILE     = "/etc/pi-nat64/port-rules.json"
 ADMIN_PASSWORD_FILE = "/etc/pi-nat64/admin.passwd"
-PIHOLE_SOCKET       = "/run/pihole/FTL.sock"
-PIHOLE_GRAVITY_DB   = "/etc/pihole/gravity.db"
+PIHOLE_SOCKET        = "/run/pihole/FTL.sock"
+PIHOLE_GRAVITY_DB    = "/etc/pihole/gravity.db"
+BLOCKED_CLIENTS_FILE = "/etc/pi-nat64/blocked-clients.json"
+DNSMASQ_LEASES       = "/var/lib/misc/dnsmasq.leases"
 
 # Allowlists / validators
 _VALID_PROTO = {"TCP", "UDP"}
 _IPV6_RE     = re.compile(r'^[0-9a-fA-F:]+$')
+_MAC_RE      = re.compile(r'^([0-9a-f]{2}:){5}[0-9a-f]{2}$')
+_SIGNAL_RE   = re.compile(r'signal:\s+(-?\d+)')
 # Detect a valid SHA-256 hex digest (exactly 64 lowercase hex chars)
 _HASH_RE     = re.compile(r'^[0-9a-f]{64}$')
 # Valid hostname / domain label (no wildcards, no shell chars)
@@ -573,6 +577,176 @@ def api_reboot():
     # Popen instead of call so the HTTP response is sent before the system goes down
     subprocess.Popen(["systemctl", "reboot"])
     return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# API — connected clients
+# ---------------------------------------------------------------------------
+
+def _load_blocked_clients() -> set:
+    if os.path.exists(BLOCKED_CLIENTS_FILE):
+        with open(BLOCKED_CLIENTS_FILE) as f:
+            return set(json.load(f))
+    return set()
+
+
+def _save_blocked_clients(macs: set):
+    os.makedirs(os.path.dirname(BLOCKED_CLIENTS_FILE), exist_ok=True)
+    tmp = BLOCKED_CLIENTS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(sorted(macs), f, indent=2)
+    os.replace(tmp, BLOCKED_CLIENTS_FILE)
+
+
+def _get_stations() -> list:
+    """Parse `iw dev wlan0 station dump` into a list of dicts."""
+    out = _run_safe(["iw", "dev", "wlan0", "station", "dump"], "")
+    stations, cur = [], {}
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("Station "):
+            if cur:
+                stations.append(cur)
+            cur = {"mac": line.split()[1].lower()}
+        elif line.startswith("signal:"):
+            m = _SIGNAL_RE.search(line)
+            if m:
+                cur["signal"] = int(m.group(1))
+        elif line.startswith("tx bytes:"):
+            try:
+                cur["tx_bytes"] = int(line.split()[-1])
+            except ValueError:
+                pass
+        elif line.startswith("rx bytes:"):
+            try:
+                cur["rx_bytes"] = int(line.split()[-1])
+            except ValueError:
+                pass
+        elif line.startswith("connected time:"):
+            try:
+                cur["connected_sec"] = int(line.split()[-2])
+            except (ValueError, IndexError):
+                pass
+    if cur:
+        stations.append(cur)
+    return stations
+
+
+def _get_leases() -> dict:
+    """Return {mac: {ip, hostname}} from dnsmasq leases file."""
+    leases = {}
+    if not os.path.exists(DNSMASQ_LEASES):
+        return leases
+    try:
+        with open(DNSMASQ_LEASES) as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 4:
+                    mac = parts[1].lower()
+                    leases[mac] = {
+                        "ip":       parts[2],
+                        "hostname": parts[3] if parts[3] != "*" else "",
+                    }
+    except OSError:
+        pass
+    return leases
+
+
+@app.route("/api/clients")
+@login_required
+def api_clients():
+    stations = _get_stations()
+    leases   = _get_leases()
+    blocked  = _load_blocked_clients()
+    clients  = []
+
+    for s in stations:
+        mac    = s["mac"]
+        lease  = leases.get(mac, {})
+        clients.append({
+            "mac":           mac,
+            "ip":            lease.get("ip", ""),
+            "hostname":      lease.get("hostname", ""),
+            "signal":        s.get("signal"),
+            "tx_bytes":      s.get("tx_bytes"),
+            "rx_bytes":      s.get("rx_bytes"),
+            "connected_sec": s.get("connected_sec"),
+            "online":        True,
+            "blocked":       mac in blocked,
+        })
+
+    # Include blocked-but-offline clients so they can be unblocked from the UI
+    seen = {c["mac"] for c in clients}
+    for mac in blocked:
+        if mac not in seen:
+            lease = leases.get(mac, {})
+            clients.append({
+                "mac":           mac,
+                "ip":            lease.get("ip", ""),
+                "hostname":      lease.get("hostname", ""),
+                "signal":        None,
+                "tx_bytes":      None,
+                "rx_bytes":      None,
+                "connected_sec": None,
+                "online":        False,
+                "blocked":       True,
+            })
+
+    return jsonify(clients)
+
+
+def _mac_valid(mac: str) -> bool:
+    return bool(_MAC_RE.match(mac))
+
+
+def _apply_client_block(mac: str, block: bool):
+    action = "-I" if block else "-D"
+    for ipt in ("iptables", "ip6tables"):
+        subprocess.call(
+            [ipt, action, "FORWARD", "-m", "mac", "--mac-source", mac, "-j", "DROP"],
+            stderr=subprocess.DEVNULL,
+        )
+
+
+@app.route("/api/clients/block", methods=["POST"])
+@login_required
+@csrf_required
+def api_client_block():
+    data = request.get_json(force=True) or {}
+    mac  = data.get("mac", "").strip().lower()
+    if not _mac_valid(mac):
+        return jsonify({"error": "Invalid MAC address"}), 400
+
+    _apply_client_block(mac, block=True)
+    # Immediately deauthenticate from the AP
+    subprocess.call(
+        ["hostapd_cli", "-i", "wlan0", "deauthenticate", mac],
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.call(["netfilter-persistent", "save"], stderr=subprocess.DEVNULL)
+
+    blocked = _load_blocked_clients()
+    blocked.add(mac)
+    _save_blocked_clients(blocked)
+    return jsonify({"mac": mac, "blocked": True})
+
+
+@app.route("/api/clients/unblock", methods=["POST"])
+@login_required
+@csrf_required
+def api_client_unblock():
+    data = request.get_json(force=True) or {}
+    mac  = data.get("mac", "").strip().lower()
+    if not _mac_valid(mac):
+        return jsonify({"error": "Invalid MAC address"}), 400
+
+    _apply_client_block(mac, block=False)
+    subprocess.call(["netfilter-persistent", "save"], stderr=subprocess.DEVNULL)
+
+    blocked = _load_blocked_clients()
+    blocked.discard(mac)
+    _save_blocked_clients(blocked)
+    return jsonify({"mac": mac, "blocked": False})
 
 
 @app.route("/api/pihole/toggle", methods=["POST"])
