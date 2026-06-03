@@ -333,6 +333,44 @@ function escHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+// ── Reboot ───────────────────────────────────────────────────────────────────
+document.getElementById('reboot-btn')?.addEventListener('click', () => {
+  document.getElementById('reboot-modal').style.display = 'flex';
+});
+
+['close-reboot-modal', 'cancel-reboot'].forEach(id => {
+  document.getElementById(id)?.addEventListener('click', () => {
+    document.getElementById('reboot-modal').style.display = 'none';
+  });
+});
+
+document.getElementById('confirm-reboot')?.addEventListener('click', async () => {
+  const btn = document.getElementById('confirm-reboot');
+  btn.textContent = 'Rebooting…';
+  btn.disabled = true;
+  document.getElementById('cancel-reboot').disabled = true;
+
+  try {
+    await fetch('/api/reboot', { method: 'POST', headers: csrfHeaders() });
+  } catch (_) { /* connection drop is expected */ }
+
+  document.getElementById('reboot-modal').innerHTML = `
+    <div class="modal" style="text-align:center">
+      <p style="font-size:15px;font-weight:600;margin-bottom:10px">Rebooting…</p>
+      <p class="field-hint">The page will reload automatically when the gateway comes back online.</p>
+    </div>`;
+
+  // Wait 20 s for shutdown, then poll until /api/status responds again
+  setTimeout(() => {
+    const poll = setInterval(async () => {
+      try {
+        const res = await fetch('/api/status');
+        if (res.ok) { clearInterval(poll); location.reload(); }
+      } catch (_) {}
+    }, 3000);
+  }, 20000);
+});
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 loadStatus();
 setInterval(loadStatus, 10000);

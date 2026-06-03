@@ -566,6 +566,15 @@ def api_pihole_top_blocked():
     return jsonify(_pihole_top_blocked())
 
 
+@app.route("/api/reboot", methods=["POST"])
+@login_required
+@csrf_required
+def api_reboot():
+    # Popen instead of call so the HTTP response is sent before the system goes down
+    subprocess.Popen(["systemctl", "reboot"])
+    return jsonify({"ok": True})
+
+
 @app.route("/api/pihole/toggle", methods=["POST"])
 @login_required
 @csrf_required
