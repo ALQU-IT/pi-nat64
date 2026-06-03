@@ -21,6 +21,7 @@ document.querySelectorAll('.nav-item[data-tab]').forEach(link => {
     if (tab === 'status')   loadStatus();
     if (tab === 'portfwd')  loadRules();
     if (tab === 'settings') loadSettings();
+    if (tab === 'blocking') loadBlocking();
   });
 });
 
@@ -37,8 +38,9 @@ async function loadStatus() {
     setDot('svc-jool',    d.jool_running);
     setDot('svc-unbound', d.unbound_running);
     setDot('svc-hostapd', d.hostapd_running);
+    setDot('svc-pihole',  d.pihole_running);
 
-    const all = d.jool_running && d.unbound_running && d.hostapd_running;
+    const all = d.jool_running && d.unbound_running && d.hostapd_running && d.pihole_running;
     const st = document.getElementById('overall-status');
     if (st) {
       st.innerHTML = all
@@ -198,6 +200,64 @@ document.getElementById('save-settings')?.addEventListener('click', async () => 
     msgEl.textContent = d.error || 'Failed to save settings.';
   }
   setTimeout(() => { msgEl.style.display = 'none'; }, 4000);
+});
+
+// ── Blocking (Pi-hole) ────────────────────────────────────────────────────────
+async function loadBlocking() {
+  try {
+    const res = await fetch('/api/pihole/stats');
+    const d = await res.json();
+
+    setText('ph-queries', d.queries_today.toLocaleString());
+    setText('ph-blocked',  d.blocked_today.toLocaleString());
+    setText('ph-pct',      d.block_pct.toFixed(1));
+    setText('ph-gravity',  d.domains_blocked.toLocaleString());
+
+    const dot  = document.getElementById('ph-status-dot');
+    const text = document.getElementById('ph-status-text');
+    if (dot && text) {
+      const on = d.status === 'enabled';
+      dot.className = 'dot ' + (on ? 'dot-green' : 'dot-red');
+      text.textContent = on ? 'Blocking enabled' : 'Blocking disabled';
+    }
+
+    const btn = document.getElementById('pihole-toggle-btn');
+    if (btn) btn.textContent = d.status === 'enabled' ? 'Disable blocking' : 'Enable blocking';
+  } catch (err) {
+    console.error('Pi-hole stats fetch failed', err);
+  }
+
+  try {
+    const res = await fetch('/api/pihole/top-blocked');
+    const items = await res.json();
+    const list = document.getElementById('ph-top-list');
+    if (!list) return;
+    if (!items.length) {
+      list.innerHTML = '<p class="field-hint">No blocked domains yet.</p>';
+      return;
+    }
+    list.innerHTML = items.map(i => `
+      <div class="service-row">
+        <span class="svc-name">${escHtml(i.domain)}</span>
+        <span class="svc-desc">${i.count.toLocaleString()} blocked</span>
+      </div>`).join('');
+  } catch (err) {
+    console.error('Pi-hole top-blocked fetch failed', err);
+  }
+}
+
+document.getElementById('pihole-toggle-btn')?.addEventListener('click', async () => {
+  const msg = document.getElementById('pihole-toggle-msg');
+  try {
+    const res = await fetch('/api/pihole/toggle', { method: 'POST', headers: csrfHeaders() });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'Failed');
+    if (msg) msg.textContent = d.status === 'enabled' ? 'Blocking enabled.' : 'Blocking disabled.';
+    loadBlocking();
+  } catch (err) {
+    if (msg) msg.textContent = String(err);
+  }
+  setTimeout(() => { if (msg) msg.textContent = ''; }, 4000);
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

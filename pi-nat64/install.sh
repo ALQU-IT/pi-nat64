@@ -88,21 +88,18 @@ chmod +x /etc/rc.local
 ok "Jool configured with prefix $JOOL_PREFIX"
 
 # ── 5. Configure Unbound (DNS64) ──────────────────────────────────────────────
-info "Configuring Unbound DNS64..."
+info "Configuring Unbound DNS64 (127.0.0.1:5335 — Pi-hole is the public resolver)..."
 mkdir -p /etc/unbound/unbound.conf.d
 cat > /etc/unbound/unbound.conf.d/dns64.conf <<EOF
 server:
-  interface: 0.0.0.0
-  interface: ::0
-  port: 53
-  access-control: 127.0.0.0/8 allow
-  access-control: ::1/128 allow
-  access-control: 10.0.0.0/8 allow
-  access-control: 192.168.0.0/16 allow
-  access-control: 172.16.0.0/12 allow
-  access-control: fd00::/8 allow
-  do-ip6: yes
+  interface: 127.0.0.1
+  port: 5335
+  access-control: 0.0.0.0/0 refuse
+  access-control: ::/0 refuse
+  access-control: 127.0.0.1/32 allow
   do-ip4: yes
+  do-ip6: yes
+  auto-trust-anchor-file: "/var/lib/unbound/root.key"
   module-config: "dns64 iterator"
 
 dns64:
@@ -116,14 +113,30 @@ EOF
 
 # Disable systemd-resolved conflict if active
 if systemctl is-active --quiet systemd-resolved; then
-  warn "Disabling systemd-resolved (conflicts with Unbound on port 53)..."
+  warn "Disabling systemd-resolved (conflicts with Unbound/Pi-hole on port 53)..."
   systemctl disable --now systemd-resolved
   rm -f /etc/resolv.conf
   echo "nameserver 127.0.0.1" > /etc/resolv.conf
 fi
 
 systemctl enable --now unbound
-ok "Unbound DNS64 configured."
+ok "Unbound DNS64 configured on 127.0.0.1:5335."
+
+# ── 5.5 Install Pi-hole (no web UI — stats shown in pi-nat64 UI) ──────────────
+info "Installing Pi-hole..."
+DEBIAN_FRONTEND=noninteractive apt-get install -y curl 2>&1 | grep -E "^(Get|Unpacking|Setting up|E:)" || true
+
+mkdir -p /etc/pihole
+SCRIPT_DIR_TMP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+sed "s/^PIHOLE_INTERFACE=.*/PIHOLE_INTERFACE=$AP_IFACE/" \
+    "$SCRIPT_DIR_TMP/configs/pihole-setupVars.conf" > /etc/pihole/setupVars.conf
+
+curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended
+
+# Pi-hole installer may restart dnsmasq; ensure dnsmasq stays DHCP-only
+systemctl is-active --quiet dnsmasq && systemctl restart dnsmasq || true
+
+ok "Pi-hole installed."
 
 # ── 6. Configure hostapd ──────────────────────────────────────────────────────
 info "Configuring hostapd access point..."
@@ -312,4 +325,5 @@ echo "  Logs:"
 echo "    journalctl -u pi-nat64-ui -f"
 echo "    journalctl -u hostapd -f"
 echo "    journalctl -u unbound -f"
+echo "    journalctl -u pihole-FTL -f"
 echo ""
