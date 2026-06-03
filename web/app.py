@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import socket as _unix_sock
 import subprocess
 import time
 from functools import wraps
@@ -31,6 +32,7 @@ HOSTAPD_CONF        = "/etc/hostapd/hostapd.conf"
 JOOL_PREFIX         = "64:ff9b::/96"
 PORT_RULES_FILE     = "/etc/pi-nat64/port-rules.json"
 ADMIN_PASSWORD_FILE = "/etc/pi-nat64/admin.passwd"
+PIHOLE_SOCKET       = "/run/pihole/FTL.sock"
 
 # Allowlists
 _VALID_PROTO = {"TCP", "UDP"}
@@ -196,12 +198,13 @@ def index():
 @login_required
 def api_status():
     return jsonify({
-        "nat64_sessions":  _nat64_session_count(),
-        "dns_queries":     _dns_query_count(),
-        "ap_clients":      _ap_clients(),
-        "jool_running":    _service_active("jool"),
-        "unbound_running": _service_active("unbound"),
-        "hostapd_running": _service_active("hostapd"),
+        "nat64_sessions":   _nat64_session_count(),
+        "dns_queries":      _dns_query_count(),
+        "ap_clients":       _ap_clients(),
+        "jool_running":     _service_active("jool"),
+        "unbound_running":  _service_active("unbound"),
+        "hostapd_running":  _service_active("hostapd"),
+        "pihole_running":   _service_active("pihole-FTL"),
     })
 
 
@@ -241,13 +244,64 @@ def _ap_clients() -> int:
 
 def _service_active(name: str) -> bool:
     # Allowlist service names to prevent injection through stored data
-    if name not in ("jool", "unbound", "hostapd", "dnsmasq", "radvd"):
+    if name not in ("jool", "unbound", "hostapd", "dnsmasq", "radvd", "pihole-FTL"):
         return False
     rc = subprocess.call(
         ["systemctl", "is-active", "--quiet", name],
         stderr=subprocess.DEVNULL
     )
     return rc == 0
+
+
+# ---------------------------------------------------------------------------
+# Pi-hole FTL helpers
+# ---------------------------------------------------------------------------
+
+def _ftl_command(cmd: str) -> str:
+    """Send a command to Pi-hole FTL via its Unix socket and return the response."""
+    try:
+        with _unix_sock.socket(_unix_sock.AF_UNIX, _unix_sock.SOCK_STREAM) as s:
+            s.settimeout(3)
+            s.connect(PIHOLE_SOCKET)
+            s.sendall((cmd + "\n").encode())
+            buf = b""
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                if b"---EOM---" in buf:
+                    break
+            return buf.replace(b"---EOM---", b"").decode(errors="replace").strip()
+    except Exception:
+        return ""
+
+
+def _pihole_stats() -> dict:
+    raw = _ftl_command(">stats")
+    result: dict = {}
+    for line in raw.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            val = parts[1].strip()
+            try:
+                result[parts[0]] = float(val) if "." in val else int(val)
+            except ValueError:
+                result[parts[0]] = val
+    return result
+
+
+def _pihole_top_blocked(n: int = 10) -> list:
+    raw = _ftl_command(f">top-ads ({n})")
+    result = []
+    for line in raw.splitlines():
+        parts = line.split()
+        if len(parts) >= 3:
+            try:
+                result.append({"rank": int(parts[0]), "count": int(parts[1]), "domain": parts[2]})
+            except (ValueError, IndexError):
+                pass
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +536,43 @@ def api_settings_save():
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# API — Pi-hole
+# ---------------------------------------------------------------------------
+
+@app.route("/api/pihole/stats")
+@login_required
+def api_pihole_stats():
+    s = _pihole_stats()
+    return jsonify({
+        "domains_blocked": int(s.get("domains_being_blocked", 0)),
+        "queries_today":   int(s.get("dns_queries_today", 0)),
+        "blocked_today":   int(s.get("ads_blocked_today", 0)),
+        "block_pct":       round(float(s.get("ads_percentage_today", 0)), 1),
+        "status":          s.get("status", "unknown"),
+    })
+
+
+@app.route("/api/pihole/top-blocked")
+@login_required
+def api_pihole_top_blocked():
+    return jsonify(_pihole_top_blocked())
+
+
+@app.route("/api/pihole/toggle", methods=["POST"])
+@login_required
+@csrf_required
+def api_pihole_toggle():
+    s = _pihole_stats()
+    current = s.get("status", "unknown")
+    cmd = ["pihole", "enable"] if current != "enabled" else ["pihole", "disable"]
+    rc = subprocess.call(cmd, stderr=subprocess.DEVNULL)
+    if rc != 0:
+        return jsonify({"error": "Failed to toggle Pi-hole blocking"}), 500
+    updated = _pihole_stats()
+    return jsonify({"status": updated.get("status", "unknown")})
+
+
 # Security headers middleware
 # ---------------------------------------------------------------------------
 
