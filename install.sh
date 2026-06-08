@@ -89,10 +89,25 @@ ok "Jool configured with prefix $JOOL_PREFIX"
 
 # ── 5. Configure Unbound (DNS64) ──────────────────────────────────────────────
 info "Configuring Unbound DNS64 (127.0.0.1:5335 — Pi-hole is the public resolver)..."
+
+# Disable systemd-resolved BEFORE starting Unbound (frees port 53 / resolv.conf)
+if systemctl is-active --quiet systemd-resolved; then
+  warn "Disabling systemd-resolved (conflicts with Unbound/Pi-hole on port 53)..."
+  systemctl disable --now systemd-resolved
+  rm -f /etc/resolv.conf
+  echo "nameserver 127.0.0.1" > /etc/resolv.conf
+fi
+
 mkdir -p /etc/unbound/unbound.conf.d
+
+# Overwrite main config so Unbound ONLY loads our drop-in (no hidden :53 listener)
+cat > /etc/unbound/unbound.conf <<'UBMAIN'
+include-toplevel: "/etc/unbound/unbound.conf.d/*.conf"
+UBMAIN
+
 cat > /etc/unbound/unbound.conf.d/dns64.conf <<EOF
 server:
-  interface: 127.0.0.1
+  interface: 127.0.0.1@5335
   port: 5335
   access-control: 0.0.0.0/0 refuse
   access-control: ::/0 refuse
@@ -111,15 +126,13 @@ forward-zone:
   forward-addr: 2606:4700:4700::1001
 EOF
 
-# Disable systemd-resolved conflict if active
-if systemctl is-active --quiet systemd-resolved; then
-  warn "Disabling systemd-resolved (conflicts with Unbound/Pi-hole on port 53)..."
-  systemctl disable --now systemd-resolved
-  rm -f /etc/resolv.conf
-  echo "nameserver 127.0.0.1" > /etc/resolv.conf
-fi
+# Initialise DNSSEC root trust-anchor (required before first start on a fresh system)
+mkdir -p /var/lib/unbound
+unbound-anchor -a /var/lib/unbound/root.key || true
+chown -R unbound:unbound /var/lib/unbound 2>/dev/null || true
 
-systemctl enable --now unbound
+systemctl enable unbound
+systemctl restart unbound || { journalctl -u unbound -n 30 --no-pager; error "Unbound failed to start — see logs above."; }
 ok "Unbound DNS64 configured on 127.0.0.1:5335."
 
 # ── 5.5 Install Pi-hole (no web UI — stats shown in pi-nat64 UI) ──────────────
