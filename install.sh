@@ -77,6 +77,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
   python3-pip \
   python3-flask \
   avahi-daemon \
+  openssl \
   curl
 ok "Packages installed."
 
@@ -151,7 +152,6 @@ ok "Unbound DNS64 configured on 127.0.0.1:5335."
 
 # ── 5.5 Install Pi-hole (no web UI — stats shown in pi-nat64 UI) ──────────────
 info "Installing Pi-hole..."
-DEBIAN_FRONTEND=noninteractive apt-get install -y curl 2>&1 | grep -E "^(Get|Unpacking|Setting up|E:)" || true
 
 mkdir -p /etc/pihole
 SCRIPT_DIR_TMP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -162,6 +162,15 @@ curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended
 
 # Pi-hole installer may restart dnsmasq; ensure dnsmasq stays DHCP-only
 systemctl is-active --quiet dnsmasq && systemctl restart dnsmasq || true
+
+# Pi-hole v6's FTL embeds its own web server on :80/:443 by default, which would
+# collide with the pi-nat64 UI. We read stats straight from FTL's SQLite DBs, so
+# move FTL's web server to a loopback-only high port to free 80/443 for the UI.
+if command -v pihole-FTL >/dev/null 2>&1; then
+  pihole-FTL --config webserver.port '127.0.0.1:8053' 2>/dev/null \
+    || warn "Could not move FTL's web server port — watch for a port-80 clash with the UI."
+  systemctl restart pihole-FTL 2>/dev/null || true
+fi
 
 ok "Pi-hole installed."
 
@@ -266,10 +275,12 @@ ip6tables -t nat -A POSTROUTING -o "$ETH_IFACE" -j MASQUERADE
 # IPv4 fallback masquerade (for devices that fall back)
 iptables -t nat -A POSTROUTING -o "$ETH_IFACE" -j MASQUERADE
 
-# Block web UI (port 80) from the internet-facing eth0
+# Block web UI (ports 80 + 443) from the internet-facing eth0
 # Use -I to insert at the top so pre-existing ACCEPT rules don't bypass the block
-iptables  -I INPUT 1 -i "$ETH_IFACE" -p tcp --dport 80 -j DROP
-ip6tables -I INPUT 1 -i "$ETH_IFACE" -p tcp --dport 80 -j DROP
+for _port in 80 443; do
+  iptables  -I INPUT 1 -i "$ETH_IFACE" -p tcp --dport "$_port" -j DROP
+  ip6tables -I INPUT 1 -i "$ETH_IFACE" -p tcp --dport "$_port" -j DROP
+done
 
 # Block external access to DNS (Unbound) from eth0
 iptables  -I INPUT 1 -i "$ETH_IFACE" -p udp --dport 53 -j DROP
@@ -287,8 +298,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cp -r "$SCRIPT_DIR/web" "$INSTALL_DIR/"
 mkdir -p /etc/pi-nat64
 
-# Store SECRET_KEY in a root-only file; the unit's EnvironmentFile reads it
-printf 'SECRET_KEY=%s\n' "$SECRET_KEY" > /etc/pi-nat64/secret.env
+# Generate a self-signed TLS certificate so the UI can serve HTTPS (the admin
+# password and session cookie must not cross the Wi-Fi in cleartext).
+info "Generating self-signed TLS certificate..."
+mkdir -p /etc/pi-nat64/tls
+if [[ ! -f /etc/pi-nat64/tls/cert.pem ]]; then
+  openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout /etc/pi-nat64/tls/key.pem \
+    -out    /etc/pi-nat64/tls/cert.pem \
+    -days 3650 \
+    -subj "/CN=gateway.local" \
+    -addext "subjectAltName=DNS:gateway.local,IP:${AP_IPV4},IP:${AP_GW_IPV6}" \
+    || error "Failed to generate TLS certificate (is openssl installed?)"
+fi
+chmod 600 /etc/pi-nat64/tls/key.pem
+chmod 644 /etc/pi-nat64/tls/cert.pem
+
+# Store SECRET_KEY + TLS paths in a root-only file; the unit's EnvironmentFile reads it
+cat > /etc/pi-nat64/secret.env <<EOF
+SECRET_KEY=$SECRET_KEY
+TLS_CERT=/etc/pi-nat64/tls/cert.pem
+TLS_KEY=/etc/pi-nat64/tls/key.pem
+EOF
 chmod 600 /etc/pi-nat64/secret.env
 
 # Store admin password as a salted scrypt hash (matches web/app.py format; never plaintext)
@@ -345,13 +376,14 @@ echo -e "  ${GREEN}Installation complete!${NC}"
 echo "  ════════════════════════════════════════════"
 echo ""
 echo "  Wi-Fi AP  : $AP_SSID  (pass: $AP_PASS)"
-echo "  Web UI    : http://gateway.local  or  http://$AP_IPV4"
+echo "  Web UI    : https://gateway.local  or  https://$AP_IPV4"
+echo "              (self-signed cert — your browser will warn once; that's expected)"
 echo -e "  ${YELLOW}Admin password (randomly generated — save it now): ${ADMIN_PASS}${NC}"
 echo "  This password is shown ONLY here. Change it anytime in Settings."
 echo ""
 echo -e "  ${YELLOW}Next steps:${NC}"
 echo "  1. Connect a device to the '$AP_SSID' Wi-Fi"
-echo "  2. Open http://gateway.local in a browser"
+echo "  2. Open https://gateway.local in a browser"
 echo "  3. Change the admin password in Settings"
 echo "  4. Change the AP passphrase in Settings"
 echo "  5. Add port-forwarding rules as needed"

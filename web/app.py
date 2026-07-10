@@ -7,7 +7,6 @@ import json
 import os
 import re
 import secrets
-import socket as _unix_sock
 import sqlite3
 import subprocess
 import sys
@@ -28,11 +27,18 @@ if not _secret:
     _secret = secrets.token_hex(32)
 app.secret_key = _secret
 
+# TLS is enabled when the systemd unit provides a cert+key (see install.sh).
+# The Secure cookie flag is tied to it so HTTP-only fallback still allows login.
+TLS_CERT = os.environ.get("TLS_CERT", "")
+TLS_KEY  = os.environ.get("TLS_KEY", "")
+_TLS_ENABLED = bool(TLS_CERT and TLS_KEY and os.path.exists(TLS_CERT) and os.path.exists(TLS_KEY))
+
 # Enforce secure session cookies
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    PERMANENT_SESSION_LIFETIME=3600,   # 1-hour session timeout
+    SESSION_COOKIE_SECURE=_TLS_ENABLED,   # only send cookie over HTTPS when TLS is on
+    PERMANENT_SESSION_LIFETIME=3600,       # 1-hour session timeout
 )
 
 # ---------------------------------------------------------------------------
@@ -42,10 +48,15 @@ HOSTAPD_CONF        = "/etc/hostapd/hostapd.conf"
 JOOL_PREFIX         = "64:ff9b::/96"
 PORT_RULES_FILE     = "/etc/pi-nat64/port-rules.json"
 ADMIN_PASSWORD_FILE = "/etc/pi-nat64/admin.passwd"
-PIHOLE_SOCKET        = "/run/pihole/FTL.sock"
 PIHOLE_GRAVITY_DB    = "/etc/pihole/gravity.db"
+PIHOLE_FTL_DB        = "/etc/pihole/pihole-FTL.db"   # long-term query DB (v6)
 BLOCKED_CLIENTS_FILE = "/etc/pi-nat64/blocked-clients.json"
 DNSMASQ_LEASES       = "/var/lib/misc/dnsmasq.leases"
+
+# FTL query "status" values that count as blocked (Pi-hole v6). See
+# https://docs.pi-hole.net/database/ftl/#supported-status-types — verify against
+# your FTL version if the blocked-today figure looks off.
+_FTL_BLOCKED_STATUS = (1, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 17)
 
 # Allowlists / validators
 _VALID_PROTO = {"TCP", "UDP"}
@@ -317,54 +328,77 @@ def _service_active(name: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Pi-hole FTL helpers
+# Pi-hole helpers (Pi-hole v6: the legacy FTL telnet/socket API was removed, so
+# stats are read directly from the SQLite databases and the FTL config).
 # ---------------------------------------------------------------------------
 
-def _ftl_command(cmd: str) -> str:
-    """Send a command to Pi-hole FTL via its Unix socket and return the response."""
+def _sqlite_ro(path: str):
+    """Open a SQLite DB read-only (never locks/creates the file)."""
+    return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=3)
+
+
+def _today_start() -> int:
+    """Unix timestamp for local midnight today."""
+    t = time.localtime()
+    return int(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1)))
+
+
+def _gravity_domain_count() -> int:
+    """Number of domains on the active blocklists (gravity)."""
     try:
-        with _unix_sock.socket(_unix_sock.AF_UNIX, _unix_sock.SOCK_STREAM) as s:
-            s.settimeout(3)
-            s.connect(PIHOLE_SOCKET)
-            s.sendall((cmd + "\n").encode())
-            buf = b""
-            while True:
-                chunk = s.recv(4096)
-                if not chunk:
-                    break
-                buf += chunk
-                if b"---EOM---" in buf:
-                    break
-            return buf.replace(b"---EOM---", b"").decode(errors="replace").strip()
+        with _sqlite_ro(PIHOLE_GRAVITY_DB) as db:
+            return int(db.execute("SELECT COUNT(*) FROM gravity").fetchone()[0])
     except Exception:
-        return ""
+        return 0
+
+
+def _blocking_active() -> str:
+    """Read blocking on/off from FTL config: 'enabled' | 'disabled' | 'unknown'."""
+    out = _run_safe(["pihole-FTL", "--config", "dns.blocking.active"], "").strip().lower()
+    if out == "true":
+        return "enabled"
+    if out == "false":
+        return "disabled"
+    return "unknown"
 
 
 def _pihole_stats() -> dict:
-    raw = _ftl_command(">stats")
-    result: dict = {}
-    for line in raw.splitlines():
-        parts = line.split(None, 1)
-        if len(parts) == 2:
-            val = parts[1].strip()
-            try:
-                result[parts[0]] = float(val) if "." in val else int(val)
-            except ValueError:
-                result[parts[0]] = val
-    return result
+    """Today's query/blocked totals from FTL's long-term query database."""
+    stats = {"queries_today": 0, "blocked_today": 0, "block_pct": 0.0}
+    since = _today_start()
+    marks = ",".join("?" * len(_FTL_BLOCKED_STATUS))
+    try:
+        with _sqlite_ro(PIHOLE_FTL_DB) as db:
+            total = int(db.execute(
+                "SELECT COUNT(*) FROM queries WHERE timestamp >= ?", (since,)
+            ).fetchone()[0])
+            blocked = int(db.execute(
+                f"SELECT COUNT(*) FROM queries WHERE timestamp >= ? AND status IN ({marks})",
+                (since, *_FTL_BLOCKED_STATUS),
+            ).fetchone()[0])
+    except Exception:
+        return stats
+    stats["queries_today"] = total
+    stats["blocked_today"] = blocked
+    stats["block_pct"]     = round(100.0 * blocked / total, 1) if total else 0.0
+    return stats
 
 
 def _pihole_top_blocked(n: int = 10) -> list:
-    raw = _ftl_command(f">top-ads ({n})")
-    result = []
-    for line in raw.splitlines():
-        parts = line.split()
-        if len(parts) >= 3:
-            try:
-                result.append({"rank": int(parts[0]), "count": int(parts[1]), "domain": parts[2]})
-            except (ValueError, IndexError):
-                pass
-    return result
+    """Top blocked domains today, from FTL's long-term query database."""
+    since = _today_start()
+    marks = ",".join("?" * len(_FTL_BLOCKED_STATUS))
+    try:
+        with _sqlite_ro(PIHOLE_FTL_DB) as db:
+            rows = db.execute(
+                f"SELECT domain, COUNT(*) AS c FROM queries "
+                f"WHERE timestamp >= ? AND status IN ({marks}) "
+                f"GROUP BY domain ORDER BY c DESC LIMIT ?",
+                (since, *_FTL_BLOCKED_STATUS, n),
+            ).fetchall()
+        return [{"rank": i + 1, "count": int(r[1]), "domain": r[0]} for i, r in enumerate(rows)]
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -633,11 +667,11 @@ def api_settings_save():
 def api_pihole_stats():
     s = _pihole_stats()
     return jsonify({
-        "domains_blocked": int(s.get("domains_being_blocked", 0)),
-        "queries_today":   int(s.get("dns_queries_today", 0)),
-        "blocked_today":   int(s.get("ads_blocked_today", 0)),
-        "block_pct":       round(float(s.get("ads_percentage_today", 0)), 1),
-        "status":          s.get("status", "unknown"),
+        "domains_blocked": _gravity_domain_count(),
+        "queries_today":   s["queries_today"],
+        "blocked_today":   s["blocked_today"],
+        "block_pct":       s["block_pct"],
+        "status":          _blocking_active(),
     })
 
 
@@ -839,14 +873,12 @@ def api_client_unblock():
 @login_required
 @csrf_required
 def api_pihole_toggle():
-    s = _pihole_stats()
-    current = s.get("status", "unknown")
-    cmd = ["pihole", "enable"] if current != "enabled" else ["pihole", "disable"]
+    current = _blocking_active()
+    cmd = ["pihole", "disable"] if current == "enabled" else ["pihole", "enable"]
     rc = subprocess.call(cmd, stderr=subprocess.DEVNULL)
     if rc != 0:
         return jsonify({"error": "Failed to toggle Pi-hole blocking"}), 500
-    updated = _pihole_stats()
-    return jsonify({"status": updated.get("status", "unknown")})
+    return jsonify({"status": _blocking_active()})
 
 
 # ---------------------------------------------------------------------------
@@ -1032,6 +1064,8 @@ def set_security_headers(response):
         "img-src 'self' data:; "
         "connect-src 'self'"
     )
+    if _TLS_ENABLED:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000"
     return response
 
 
@@ -1039,5 +1073,33 @@ def set_security_headers(response):
 # Run
 # ---------------------------------------------------------------------------
 
+def _start_http_redirect():
+    """Serve a tiny app on :80 that 301-redirects everything to HTTPS."""
+    import threading
+    from werkzeug.serving import make_server
+
+    def _redirect_app(environ, start_response):
+        host = environ.get("HTTP_HOST", "").split(":")[0]
+        path = environ.get("PATH_INFO", "")
+        qs   = environ.get("QUERY_STRING", "")
+        target = f"https://{host}{path}" + (f"?{qs}" if qs else "")
+        start_response("301 Moved Permanently", [("Location", target)])
+        return [b""]
+
+    try:
+        srv = make_server("0.0.0.0", 80, _redirect_app)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    except Exception as exc:
+        print(f"WARNING: could not start HTTP->HTTPS redirect on :80: {exc}",
+              file=sys.stderr)
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=80, debug=False)
+    if _TLS_ENABLED:
+        _start_http_redirect()
+        app.run(host="0.0.0.0", port=443, ssl_context=(TLS_CERT, TLS_KEY), debug=False)
+    else:
+        print("WARNING: TLS_CERT/TLS_KEY not configured — serving plain HTTP on :80. "
+              "The admin password and session cookie will be sent in cleartext.",
+              file=sys.stderr)
+        app.run(host="0.0.0.0", port=80, debug=False)
