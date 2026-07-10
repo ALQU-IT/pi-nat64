@@ -106,7 +106,7 @@ Connect any device to the `pi-nat64` Wi-Fi, then open:
 http://gateway.local
 ```
 
-or `http://192.168.50.1`. Default login password: `admin`.
+or `http://192.168.50.1`. The installer generates a **random admin password and prints it once** at the end of the install — save it. You can change it anytime in Settings.
 
 | Tab | What you can do |
 |-----|----------------|
@@ -220,7 +220,7 @@ The installer applies the following hardening out of the box:
 - **Login rate limiting** — IP locked out for 60 s after 10 failed attempts.
 - **Session cookies** are `HttpOnly` and `SameSite=Lax`.
 - **Flask `SECRET_KEY`** stored in `/etc/pi-nat64/secret.env` (mode 600), loaded via systemd `EnvironmentFile=` — not visible in `systemctl cat`.
-- **Admin password** stored as SHA-256 hash in `/etc/pi-nat64/admin.passwd` (mode 600).
+- **Admin password** stored as a salted **scrypt** hash in `/etc/pi-nat64/admin.passwd` (mode 600); randomly generated per install (no shipped default). Legacy SHA-256 hashes are upgraded automatically on next login.
 - **WPA2 passphrase** validated to reject `#` (hostapd comment character) which would silently truncate the key.
 - **Port-forwarding rules** are only saved to disk after the `ip6tables` command succeeds — no phantom rules on module-load failure.
 
