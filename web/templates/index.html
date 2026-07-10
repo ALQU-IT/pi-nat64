@@ -168,16 +168,16 @@
       <div class="section-block">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
           <h2 style="margin:0">Adlists</h2>
-          <button class="btn btn-sm" id="gravity-btn" onclick="updateGravity()">
+          <button class="btn btn-sm" id="gravity-btn" data-action="update-gravity">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
             Update gravity
           </button>
         </div>
         <div style="display:flex;gap:8px;margin-bottom:8px">
           <input type="text" id="adlist-url" placeholder="https://example.com/adlist.txt" style="flex:1"
-                 onkeydown="if(event.key==='Enter') addAdlist()">
+                 data-enter-action="add-adlist">
           <input type="text" id="adlist-comment" placeholder="Comment (optional)" style="width:180px">
-          <button class="btn btn-primary" onclick="addAdlist()">Add</button>
+          <button class="btn btn-primary" data-action="add-adlist">Add</button>
         </div>
         <p id="adlist-msg" class="field-hint" style="min-height:1.2rem;margin-bottom:8px"></p>
         <div id="adlist-list">
@@ -189,8 +189,8 @@
         <h2>Whitelist</h2>
         <div style="display:flex;gap:8px;margin-bottom:8px">
           <input type="text" id="wl-input" placeholder="e.g. example.com" style="flex:1"
-                 onkeydown="if(event.key==='Enter') addToWhitelist()">
-          <button class="btn btn-primary" id="wl-add-btn" onclick="addToWhitelist()">Add</button>
+                 data-enter-action="add-whitelist">
+          <button class="btn btn-primary" id="wl-add-btn" data-action="add-whitelist">Add</button>
         </div>
         <p id="wl-msg" class="field-hint" style="min-height:1.2rem;margin-bottom:8px"></p>
         <div id="wl-list" class="service-list">
@@ -203,7 +203,7 @@
     <section id="tab-clients" class="tab">
       <div class="page-header">
         <h1>Clients</h1>
-        <button class="btn" id="clients-refresh-btn" onclick="loadClients()">
+        <button class="btn" id="clients-refresh-btn" data-action="refresh-clients">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
           Refresh
         </button>

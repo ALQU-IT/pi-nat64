@@ -25,7 +25,9 @@ AP_IPV4="192.168.50.1"
 AP_PREFIX="fd00::/64"
 AP_GW_IPV6="fd00::1"
 JOOL_PREFIX="64:ff9b::/96"
-ADMIN_PASS="admin"            # web UI password — change after first login
+# Web UI admin password — randomly generated per install and shown once at the end.
+# Override by exporting ADMIN_PASS first, e.g. ADMIN_PASS=secret sudo -E bash install.sh
+ADMIN_PASS="${ADMIN_PASS:-$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 14)}"
 INSTALL_DIR="/opt/pi-nat64"
 SECRET_KEY=$(tr -dc 'A-Za-z0-9!@^&*' </dev/urandom | head -c 32 || true)
 
@@ -49,9 +51,21 @@ info "Updating package lists..."
 apt-get update -qq
 
 # ── 2. Install packages ───────────────────────────────────────────────────────
+# Kernel headers first: Raspberry Pi OS ships none by default, and without them
+# the jool-dkms module build fails silently and NAT64 never works.
+info "Installing kernel headers for the Jool DKMS module..."
+if ! apt-get install -y --no-install-recommends "linux-headers-$(uname -r)"; then
+  warn "linux-headers-$(uname -r) unavailable — falling back to raspberrypi-kernel-headers"
+  apt-get install -y --no-install-recommends raspberrypi-kernel-headers \
+    || error "Could not install kernel headers — the Jool NAT64 module cannot be built."
+fi
+
+# NOTE: no '| grep ... || true' wrapper — that would mask apt failures under
+# 'set -o pipefail' and report a broken install as success. Let set -e abort.
 info "Installing packages..."
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
   jool-tools \
+  jool-dkms \
   unbound \
   hostapd \
   dnsmasq \
@@ -63,13 +77,13 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
   python3-pip \
   python3-flask \
   avahi-daemon \
-  curl \
-  2>&1 | grep -E "^(Get|Unpacking|Setting up|E:)" || true
+  curl
 ok "Packages installed."
 
 # ── 3. Load Jool kernel module ────────────────────────────────────────────────
 info "Loading Jool kernel module..."
-modprobe jool || warn "jool modprobe failed — module may not be available. Check: sudo apt install linux-headers-$(uname -r)"
+modprobe jool || error "Failed to load the Jool kernel module — the jool-dkms build may have failed. Check: dkms status"
+lsmod | grep -q '^jool' || error "Jool module is not loaded — NAT64 will not work."
 grep -qxF 'jool' /etc/modules || echo 'jool' >> /etc/modules
 ok "Jool module loaded."
 
@@ -277,8 +291,14 @@ mkdir -p /etc/pi-nat64
 printf 'SECRET_KEY=%s\n' "$SECRET_KEY" > /etc/pi-nat64/secret.env
 chmod 600 /etc/pi-nat64/secret.env
 
-# Store admin password as SHA-256 hash (never store plaintext)
-ADMIN_PASS_HASH=$(echo -n "$ADMIN_PASS" | sha256sum | awk '{print $1}')
+# Store admin password as a salted scrypt hash (matches web/app.py format; never plaintext)
+ADMIN_PASS_HASH=$(python3 - "$ADMIN_PASS" <<'PY'
+import hashlib, os, sys
+salt = os.urandom(16)
+key = hashlib.scrypt(sys.argv[1].encode(), salt=salt, n=16384, r=8, p=1, dklen=32)
+print(f"scrypt${salt.hex()}${key.hex()}")
+PY
+)
 echo "$ADMIN_PASS_HASH" > /etc/pi-nat64/admin.passwd
 chmod 600 /etc/pi-nat64/admin.passwd
 
@@ -326,7 +346,8 @@ echo "  ════════════════════════
 echo ""
 echo "  Wi-Fi AP  : $AP_SSID  (pass: $AP_PASS)"
 echo "  Web UI    : http://gateway.local  or  http://$AP_IPV4"
-echo "  Login     : password = $ADMIN_PASS"
+echo -e "  ${YELLOW}Admin password (randomly generated — save it now): ${ADMIN_PASS}${NC}"
+echo "  This password is shown ONLY here. Change it anytime in Settings."
 echo ""
 echo -e "  ${YELLOW}Next steps:${NC}"
 echo "  1. Connect a device to the '$AP_SSID' Wi-Fi"
