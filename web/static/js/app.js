@@ -9,6 +9,36 @@ function csrfHeaders(extra) {
   return Object.assign({ 'X-CSRF-Token': getCsrfToken() }, extra);
 }
 
+// ── Event delegation ───────────────────────────────────────────────────────────
+// The CSP (script-src 'self', no 'unsafe-inline') blocks inline on* handlers, so
+// all click/Enter actions are wired here via data-action / data-enter-action.
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-action]');
+  if (!el) return;
+  const { action, id, mac, domain } = el.dataset;
+  switch (action) {
+    case 'update-gravity':   updateGravity(); break;
+    case 'add-adlist':       addAdlist(); break;
+    case 'toggle-adlist':    toggleAdlist(Number(id)); break;
+    case 'delete-adlist':    deleteAdlist(Number(id)); break;
+    case 'add-whitelist':    addToWhitelist(); break;
+    case 'remove-whitelist': removeFromWhitelist(domain); break;
+    case 'refresh-clients':  loadClients(); break;
+    case 'block-client':     blockClient(mac); break;
+    case 'unblock-client':   unblockClient(mac); break;
+    case 'toggle-rule':      toggleRule(Number(id)); break;
+    case 'delete-rule':      deleteRule(Number(id)); break;
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const el = e.target.closest('[data-enter-action]');
+  if (!el) return;
+  if (el.dataset.enterAction === 'add-adlist')    addAdlist();
+  if (el.dataset.enterAction === 'add-whitelist') addToWhitelist();
+});
+
 // ── Tab navigation ──────────────────────────────────────────────────────────
 document.querySelectorAll('.nav-item[data-tab]').forEach(link => {
   link.addEventListener('click', e => {
@@ -95,8 +125,8 @@ function renderRules(rules) {
       <td><span class="pill ${r.enabled ? 'pill-on' : 'pill-off'}">${r.enabled ? 'on' : 'off'}</span></td>
       <td>
         <div class="action-row">
-          <button class="btn btn-sm" onclick="toggleRule(${r.id})">${r.enabled ? 'Disable' : 'Enable'}</button>
-          <button class="btn btn-sm btn-danger" onclick="deleteRule(${r.id})">Delete</button>
+          <button class="btn btn-sm" data-action="toggle-rule" data-id="${r.id}">${r.enabled ? 'Disable' : 'Enable'}</button>
+          <button class="btn btn-sm btn-danger" data-action="delete-rule" data-id="${r.id}">Delete</button>
         </div>
       </td>
     </tr>
@@ -283,8 +313,8 @@ async function loadAdlists() {
             <td><span class="pill ${l.enabled ? 'pill-on' : 'pill-off'}">${l.enabled ? 'enabled' : 'disabled'}</span></td>
             <td>
               <div class="action-row">
-                <button class="btn btn-sm" onclick="toggleAdlist(${l.id})">${l.enabled ? 'Disable' : 'Enable'}</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteAdlist(${l.id})">✕</button>
+                <button class="btn btn-sm" data-action="toggle-adlist" data-id="${l.id}">${l.enabled ? 'Disable' : 'Enable'}</button>
+                <button class="btn btn-sm btn-danger" data-action="delete-adlist" data-id="${l.id}">✕</button>
               </div>
             </td>
           </tr>`).join('')}
@@ -382,7 +412,7 @@ async function loadWhitelist() {
     list.innerHTML = domains.map(d => `
       <div class="service-row">
         <span class="svc-name" style="flex:1">${escHtml(d)}</span>
-        <button class="btn btn-sm btn-danger" onclick="removeFromWhitelist('${escHtml(d)}')">Remove</button>
+        <button class="btn btn-sm btn-danger" data-action="remove-whitelist" data-domain="${escHtml(d)}">Remove</button>
       </div>`).join('');
   } catch (err) {
     list.innerHTML = '<p class="field-hint">Failed to load whitelist.</p>';
@@ -485,8 +515,8 @@ async function loadClients() {
           ? '<span class="pill pill-on">online</span>'
           : '<span class="pill" style="background:rgba(136,136,160,0.15);color:var(--muted)">offline</span>';
       const action  = c.blocked
-        ? `<button class="btn btn-sm" onclick="unblockClient('${escHtml(c.mac)}')">Unblock</button>`
-        : `<button class="btn btn-sm btn-danger" onclick="blockClient('${escHtml(c.mac)}')">Block</button>`;
+        ? `<button class="btn btn-sm" data-action="unblock-client" data-mac="${escHtml(c.mac)}">Unblock</button>`
+        : `<button class="btn btn-sm btn-danger" data-action="block-client" data-mac="${escHtml(c.mac)}">Block</button>`;
 
       return `<tr>
         <td>${name}</td>

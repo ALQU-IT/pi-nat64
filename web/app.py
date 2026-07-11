@@ -7,9 +7,9 @@ import json
 import os
 import re
 import secrets
-import socket as _unix_sock
 import sqlite3
 import subprocess
+import sys
 import time
 from functools import wraps
 
@@ -17,13 +17,28 @@ from flask import (Flask, jsonify, redirect, render_template,
                    request, session, url_for)
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+
+_secret = os.environ.get("SECRET_KEY")
+if not _secret:
+    print("WARNING: SECRET_KEY is not set — generating an ephemeral key. "
+          "All sessions will be invalidated on restart. "
+          "Set SECRET_KEY in /etc/pi-nat64/secret.env for a stable key.",
+          file=sys.stderr)
+    _secret = secrets.token_hex(32)
+app.secret_key = _secret
+
+# TLS is enabled when the systemd unit provides a cert+key (see install.sh).
+# The Secure cookie flag is tied to it so HTTP-only fallback still allows login.
+TLS_CERT = os.environ.get("TLS_CERT", "")
+TLS_KEY  = os.environ.get("TLS_KEY", "")
+_TLS_ENABLED = bool(TLS_CERT and TLS_KEY and os.path.exists(TLS_CERT) and os.path.exists(TLS_KEY))
 
 # Enforce secure session cookies
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    PERMANENT_SESSION_LIFETIME=3600,   # 1-hour session timeout
+    SESSION_COOKIE_SECURE=_TLS_ENABLED,   # only send cookie over HTTPS when TLS is on
+    PERMANENT_SESSION_LIFETIME=3600,       # 1-hour session timeout
 )
 
 # ---------------------------------------------------------------------------
@@ -33,10 +48,15 @@ HOSTAPD_CONF        = "/etc/hostapd/hostapd.conf"
 JOOL_PREFIX         = "64:ff9b::/96"
 PORT_RULES_FILE     = "/etc/pi-nat64/port-rules.json"
 ADMIN_PASSWORD_FILE = "/etc/pi-nat64/admin.passwd"
-PIHOLE_SOCKET        = "/run/pihole/FTL.sock"
 PIHOLE_GRAVITY_DB    = "/etc/pihole/gravity.db"
+PIHOLE_FTL_DB        = "/etc/pihole/pihole-FTL.db"   # long-term query DB (v6)
 BLOCKED_CLIENTS_FILE = "/etc/pi-nat64/blocked-clients.json"
 DNSMASQ_LEASES       = "/var/lib/misc/dnsmasq.leases"
+
+# FTL query "status" values that count as blocked (Pi-hole v6). See
+# https://docs.pi-hole.net/database/ftl/#supported-status-types — verify against
+# your FTL version if the blocked-today figure looks off.
+_FTL_BLOCKED_STATUS = (1, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 17)
 
 # Allowlists / validators
 _VALID_PROTO = {"TCP", "UDP"}
@@ -57,8 +77,9 @@ _DOMAIN_RE   = re.compile(
 # Login rate limiting (in-memory, per remote IP)
 # ---------------------------------------------------------------------------
 _login_attempts: dict = {}
-_MAX_ATTEMPTS  = 10
-_LOCKOUT_SECS  = 60
+_MAX_ATTEMPTS    = 10
+_LOCKOUT_SECS    = 60
+_MAX_TRACKED_IPS = 4096   # bound the table so failed logins can't exhaust memory
 
 
 def _check_rate_limit(ip: str) -> bool:
@@ -73,6 +94,10 @@ def _check_rate_limit(ip: str) -> bool:
 
 def _record_failed_login(ip: str):
     now = time.monotonic()
+    # Bound the table: if full and this is a new IP, evict the entry nearest expiry
+    if ip not in _login_attempts and len(_login_attempts) >= _MAX_TRACKED_IPS:
+        oldest = min(_login_attempts, key=lambda k: _login_attempts[k]["reset_at"])
+        del _login_attempts[oldest]
     entry = _login_attempts.setdefault(ip, {"count": 0, "reset_at": 0.0})
     entry["count"] += 1
     entry["reset_at"] = now + _LOCKOUT_SECS
@@ -86,21 +111,31 @@ def _clear_login_attempts(ip: str):
 # Auth helpers
 # ---------------------------------------------------------------------------
 
+# Salted scrypt (stdlib, memory-hard) — format: "scrypt$<salt_hex>$<key_hex>".
+# Legacy formats (bare 64-hex SHA-256 or plain text) are still accepted and
+# transparently upgraded to scrypt on the next successful login.
+_SCRYPT_N     = 16384   # CPU/memory cost (2^14) — light enough for a Pi
+_SCRYPT_R     = 8
+_SCRYPT_P     = 1
+_SCRYPT_DKLEN = 32
+
+
+def _scrypt_hash(password: str, salt: bytes) -> str:
+    key = hashlib.scrypt(password.encode(), salt=salt, n=_SCRYPT_N,
+                         r=_SCRYPT_R, p=_SCRYPT_P, dklen=_SCRYPT_DKLEN)
+    return f"scrypt${salt.hex()}${key.hex()}"
+
+
 def _hash_password(password: str) -> str:
-    """SHA-256 hex digest — good enough for a local device; use bcrypt for internet-exposed services."""
-    return hashlib.sha256(password.encode()).hexdigest()
+    """Return a fresh salted scrypt hash for a new/changed password."""
+    return _scrypt_hash(password, os.urandom(16))
 
 
 def load_password_hash() -> str:
     if os.path.exists(ADMIN_PASSWORD_FILE):
         with open(ADMIN_PASSWORD_FILE) as f:
-            stored = f.read().strip()
-        # Migrate plain-text passwords: a real hash is exactly 64 lowercase hex chars
-        if not _HASH_RE.match(stored):
-            h = _hash_password(stored)
-            _write_password_hash(h)
-            return h
-        return stored
+            return f.read().strip()
+    # No password file: fall back so first login still works with "admin"
     return _hash_password("admin")
 
 
@@ -120,9 +155,32 @@ def _write_password_hash(h: str):
         raise
 
 
+def _verify_password(candidate: str, stored: str) -> bool:
+    """Constant-time verify against scrypt, legacy SHA-256, or legacy plaintext."""
+    if stored.startswith("scrypt$"):
+        try:
+            _, salt_hex, _key_hex = stored.split("$", 2)
+            calc = _scrypt_hash(candidate, bytes.fromhex(salt_hex))
+        except (ValueError, TypeError):
+            return False
+        return hmac.compare_digest(calc, stored)
+    if _HASH_RE.match(stored):   # legacy bare SHA-256 (64 hex chars)
+        legacy = hashlib.sha256(candidate.encode()).hexdigest()
+        return hmac.compare_digest(legacy, stored)
+    return hmac.compare_digest(candidate, stored)   # legacy plaintext
+
+
 def _check_password(candidate: str) -> bool:
     stored = load_password_hash()
-    return hmac.compare_digest(_hash_password(candidate), stored)
+    if not _verify_password(candidate, stored):
+        return False
+    # Upgrade any legacy (non-scrypt) hash to salted scrypt on successful login
+    if not stored.startswith("scrypt$"):
+        try:
+            _write_password_hash(_hash_password(candidate))
+        except Exception:
+            pass
+    return True
 
 
 def login_required(f):
@@ -240,11 +298,15 @@ def _dns_query_count() -> int:
     if not os.path.exists(log):
         return 0
     try:
-        out = subprocess.check_output(
-            ["grep", "-c", "query[", log],
-            stderr=subprocess.DEVNULL, text=True
-        ).strip()
-        return int(out)
+        # -F: treat "query[" as a literal string (the '[' is not a regex bracket).
+        # grep exits 1 on zero matches — that is not an error, so accept 0 and 1.
+        result = subprocess.run(
+            ["grep", "-cF", "query[", log],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        )
+        if result.returncode not in (0, 1):
+            return 0
+        return int(result.stdout.strip() or 0)
     except Exception:
         return 0
 
@@ -266,54 +328,77 @@ def _service_active(name: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Pi-hole FTL helpers
+# Pi-hole helpers (Pi-hole v6: the legacy FTL telnet/socket API was removed, so
+# stats are read directly from the SQLite databases and the FTL config).
 # ---------------------------------------------------------------------------
 
-def _ftl_command(cmd: str) -> str:
-    """Send a command to Pi-hole FTL via its Unix socket and return the response."""
+def _sqlite_ro(path: str):
+    """Open a SQLite DB read-only (never locks/creates the file)."""
+    return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=3)
+
+
+def _today_start() -> int:
+    """Unix timestamp for local midnight today."""
+    t = time.localtime()
+    return int(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1)))
+
+
+def _gravity_domain_count() -> int:
+    """Number of domains on the active blocklists (gravity)."""
     try:
-        with _unix_sock.socket(_unix_sock.AF_UNIX, _unix_sock.SOCK_STREAM) as s:
-            s.settimeout(3)
-            s.connect(PIHOLE_SOCKET)
-            s.sendall((cmd + "\n").encode())
-            buf = b""
-            while True:
-                chunk = s.recv(4096)
-                if not chunk:
-                    break
-                buf += chunk
-                if b"---EOM---" in buf:
-                    break
-            return buf.replace(b"---EOM---", b"").decode(errors="replace").strip()
+        with _sqlite_ro(PIHOLE_GRAVITY_DB) as db:
+            return int(db.execute("SELECT COUNT(*) FROM gravity").fetchone()[0])
     except Exception:
-        return ""
+        return 0
+
+
+def _blocking_active() -> str:
+    """Read blocking on/off from FTL config: 'enabled' | 'disabled' | 'unknown'."""
+    out = _run_safe(["pihole-FTL", "--config", "dns.blocking.active"], "").strip().lower()
+    if out == "true":
+        return "enabled"
+    if out == "false":
+        return "disabled"
+    return "unknown"
 
 
 def _pihole_stats() -> dict:
-    raw = _ftl_command(">stats")
-    result: dict = {}
-    for line in raw.splitlines():
-        parts = line.split(None, 1)
-        if len(parts) == 2:
-            val = parts[1].strip()
-            try:
-                result[parts[0]] = float(val) if "." in val else int(val)
-            except ValueError:
-                result[parts[0]] = val
-    return result
+    """Today's query/blocked totals from FTL's long-term query database."""
+    stats = {"queries_today": 0, "blocked_today": 0, "block_pct": 0.0}
+    since = _today_start()
+    marks = ",".join("?" * len(_FTL_BLOCKED_STATUS))
+    try:
+        with _sqlite_ro(PIHOLE_FTL_DB) as db:
+            total = int(db.execute(
+                "SELECT COUNT(*) FROM queries WHERE timestamp >= ?", (since,)
+            ).fetchone()[0])
+            blocked = int(db.execute(
+                f"SELECT COUNT(*) FROM queries WHERE timestamp >= ? AND status IN ({marks})",
+                (since, *_FTL_BLOCKED_STATUS),
+            ).fetchone()[0])
+    except Exception:
+        return stats
+    stats["queries_today"] = total
+    stats["blocked_today"] = blocked
+    stats["block_pct"]     = round(100.0 * blocked / total, 1) if total else 0.0
+    return stats
 
 
 def _pihole_top_blocked(n: int = 10) -> list:
-    raw = _ftl_command(f">top-ads ({n})")
-    result = []
-    for line in raw.splitlines():
-        parts = line.split()
-        if len(parts) >= 3:
-            try:
-                result.append({"rank": int(parts[0]), "count": int(parts[1]), "domain": parts[2]})
-            except (ValueError, IndexError):
-                pass
-    return result
+    """Top blocked domains today, from FTL's long-term query database."""
+    since = _today_start()
+    marks = ",".join("?" * len(_FTL_BLOCKED_STATUS))
+    try:
+        with _sqlite_ro(PIHOLE_FTL_DB) as db:
+            rows = db.execute(
+                f"SELECT domain, COUNT(*) AS c FROM queries "
+                f"WHERE timestamp >= ? AND status IN ({marks}) "
+                f"GROUP BY domain ORDER BY c DESC LIMIT ?",
+                (since, *_FTL_BLOCKED_STATUS, n),
+            ).fetchall()
+        return [{"rank": i + 1, "count": int(r[1]), "domain": r[0]} for i, r in enumerate(rows)]
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +507,10 @@ def api_rules_delete(rule_id):
     target = next((r for r in rules if r["id"] == rule_id), None)
     if not target:
         return jsonify({"error": "Not found"}), 404
-    if not _apply_rule(target, delete=True):
+    # Only remove the ip6tables rule if it is currently active. A disabled rule
+    # has no rule in the chain, and `ip6tables -D` on a missing rule fails — which
+    # would otherwise make disabled rules impossible to delete.
+    if target.get("enabled") and not _apply_rule(target, delete=True):
         return jsonify({"error": "Failed to remove ip6tables rule"}), 500
     rules = [r for r in rules if r["id"] != rule_id]
     _save_rules(rules)
@@ -479,12 +567,34 @@ def _read_hostapd() -> dict:
 
 
 def _write_hostapd(cfg: dict):
-    # Only write allowed keys
-    safe_cfg = {k: v for k, v in cfg.items() if k in _HOSTAPD_ALLOWED_KEYS}
+    # The UI may only change allowlisted keys, but the rest of the file
+    # (wpa=2, ieee80211w, wps_state, comments, …) MUST be preserved — rewriting
+    # from the allowlist alone would silently drop wpa=2 and open the network.
+    updates = {k: v for k, v in cfg.items() if k in _HOSTAPD_ALLOWED_KEYS}
+
+    existing = []
+    if os.path.exists(HOSTAPD_CONF):
+        with open(HOSTAPD_CONF) as f:
+            existing = f.read().splitlines()
+
+    seen, out = set(), []
+    for line in existing:
+        stripped = line.strip()
+        if "=" in stripped and not stripped.startswith("#"):
+            key = stripped.split("=", 1)[0].strip()
+            if key in updates:
+                out.append(f"{key}={updates[key]}")
+                seen.add(key)
+                continue
+        out.append(line)
+    # Append any allowlisted keys that weren't already present in the file
+    for k, v in updates.items():
+        if k not in seen:
+            out.append(f"{k}={v}")
+
     tmp = HOSTAPD_CONF + ".tmp"
     with open(tmp, "w") as f:
-        for k, v in safe_cfg.items():
-            f.write(f"{k}={v}\n")
+        f.write("\n".join(out) + "\n")
     os.replace(tmp, HOSTAPD_CONF)
     subprocess.call(["systemctl", "restart", "hostapd"])
 
@@ -557,11 +667,11 @@ def api_settings_save():
 def api_pihole_stats():
     s = _pihole_stats()
     return jsonify({
-        "domains_blocked": int(s.get("domains_being_blocked", 0)),
-        "queries_today":   int(s.get("dns_queries_today", 0)),
-        "blocked_today":   int(s.get("ads_blocked_today", 0)),
-        "block_pct":       round(float(s.get("ads_percentage_today", 0)), 1),
-        "status":          s.get("status", "unknown"),
+        "domains_blocked": _gravity_domain_count(),
+        "queries_today":   s["queries_today"],
+        "blocked_today":   s["blocked_today"],
+        "block_pct":       s["block_pct"],
+        "status":          _blocking_active(),
     })
 
 
@@ -701,12 +811,21 @@ def _mac_valid(mac: str) -> bool:
 
 
 def _apply_client_block(mac: str, block: bool):
-    action = "-I" if block else "-D"
+    # Idempotent: always clear any existing DROP rules for this MAC first, so
+    # repeated blocks don't stack duplicates and a single unblock fully clears.
     for ipt in ("iptables", "ip6tables"):
-        subprocess.call(
-            [ipt, action, "FORWARD", "-m", "mac", "--mac-source", mac, "-j", "DROP"],
-            stderr=subprocess.DEVNULL,
-        )
+        for _ in range(16):
+            rc = subprocess.call(
+                [ipt, "-D", "FORWARD", "-m", "mac", "--mac-source", mac, "-j", "DROP"],
+                stderr=subprocess.DEVNULL,
+            )
+            if rc != 0:
+                break   # no more matching rules
+        if block:
+            subprocess.call(
+                [ipt, "-I", "FORWARD", "-m", "mac", "--mac-source", mac, "-j", "DROP"],
+                stderr=subprocess.DEVNULL,
+            )
 
 
 @app.route("/api/clients/block", methods=["POST"])
@@ -754,14 +873,12 @@ def api_client_unblock():
 @login_required
 @csrf_required
 def api_pihole_toggle():
-    s = _pihole_stats()
-    current = s.get("status", "unknown")
-    cmd = ["pihole", "enable"] if current != "enabled" else ["pihole", "disable"]
+    current = _blocking_active()
+    cmd = ["pihole", "disable"] if current == "enabled" else ["pihole", "enable"]
     rc = subprocess.call(cmd, stderr=subprocess.DEVNULL)
     if rc != 0:
         return jsonify({"error": "Failed to toggle Pi-hole blocking"}), 500
-    updated = _pihole_stats()
-    return jsonify({"status": updated.get("status", "unknown")})
+    return jsonify({"status": _blocking_active()})
 
 
 # ---------------------------------------------------------------------------
@@ -947,6 +1064,8 @@ def set_security_headers(response):
         "img-src 'self' data:; "
         "connect-src 'self'"
     )
+    if _TLS_ENABLED:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000"
     return response
 
 
@@ -954,5 +1073,33 @@ def set_security_headers(response):
 # Run
 # ---------------------------------------------------------------------------
 
+def _start_http_redirect():
+    """Serve a tiny app on :80 that 301-redirects everything to HTTPS."""
+    import threading
+    from werkzeug.serving import make_server
+
+    def _redirect_app(environ, start_response):
+        host = environ.get("HTTP_HOST", "").split(":")[0]
+        path = environ.get("PATH_INFO", "")
+        qs   = environ.get("QUERY_STRING", "")
+        target = f"https://{host}{path}" + (f"?{qs}" if qs else "")
+        start_response("301 Moved Permanently", [("Location", target)])
+        return [b""]
+
+    try:
+        srv = make_server("0.0.0.0", 80, _redirect_app)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    except Exception as exc:
+        print(f"WARNING: could not start HTTP->HTTPS redirect on :80: {exc}",
+              file=sys.stderr)
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=80, debug=False)
+    if _TLS_ENABLED:
+        _start_http_redirect()
+        app.run(host="0.0.0.0", port=443, ssl_context=(TLS_CERT, TLS_KEY), debug=False)
+    else:
+        print("WARNING: TLS_CERT/TLS_KEY not configured — serving plain HTTP on :80. "
+              "The admin password and session cookie will be sent in cleartext.",
+              file=sys.stderr)
+        app.run(host="0.0.0.0", port=80, debug=False)

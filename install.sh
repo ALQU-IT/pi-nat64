@@ -25,7 +25,9 @@ AP_IPV4="192.168.50.1"
 AP_PREFIX="fd00::/64"
 AP_GW_IPV6="fd00::1"
 JOOL_PREFIX="64:ff9b::/96"
-ADMIN_PASS="admin"            # web UI password — change after first login
+# Web UI admin password — randomly generated per install and shown once at the end.
+# Override by exporting ADMIN_PASS first, e.g. ADMIN_PASS=secret sudo -E bash install.sh
+ADMIN_PASS="${ADMIN_PASS:-$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 14)}"
 INSTALL_DIR="/opt/pi-nat64"
 SECRET_KEY=$(tr -dc 'A-Za-z0-9!@^&*' </dev/urandom | head -c 32 || true)
 
@@ -49,9 +51,21 @@ info "Updating package lists..."
 apt-get update -qq
 
 # ── 2. Install packages ───────────────────────────────────────────────────────
+# Kernel headers first: Raspberry Pi OS ships none by default, and without them
+# the jool-dkms module build fails silently and NAT64 never works.
+info "Installing kernel headers for the Jool DKMS module..."
+if ! apt-get install -y --no-install-recommends "linux-headers-$(uname -r)"; then
+  warn "linux-headers-$(uname -r) unavailable — falling back to raspberrypi-kernel-headers"
+  apt-get install -y --no-install-recommends raspberrypi-kernel-headers \
+    || error "Could not install kernel headers — the Jool NAT64 module cannot be built."
+fi
+
+# NOTE: no '| grep ... || true' wrapper — that would mask apt failures under
+# 'set -o pipefail' and report a broken install as success. Let set -e abort.
 info "Installing packages..."
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
   jool-tools \
+  jool-dkms \
   unbound \
   hostapd \
   dnsmasq \
@@ -63,13 +77,14 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
   python3-pip \
   python3-flask \
   avahi-daemon \
-  curl \
-  2>&1 | grep -E "^(Get|Unpacking|Setting up|E:)" || true
+  openssl \
+  curl
 ok "Packages installed."
 
 # ── 3. Load Jool kernel module ────────────────────────────────────────────────
 info "Loading Jool kernel module..."
-modprobe jool || warn "jool modprobe failed — module may not be available. Check: sudo apt install linux-headers-$(uname -r)"
+modprobe jool || error "Failed to load the Jool kernel module — the jool-dkms build may have failed. Check: dkms status"
+lsmod | grep -q '^jool' || error "Jool module is not loaded — NAT64 will not work."
 grep -qxF 'jool' /etc/modules || echo 'jool' >> /etc/modules
 ok "Jool module loaded."
 
@@ -137,7 +152,6 @@ ok "Unbound DNS64 configured on 127.0.0.1:5335."
 
 # ── 5.5 Install Pi-hole (no web UI — stats shown in pi-nat64 UI) ──────────────
 info "Installing Pi-hole..."
-DEBIAN_FRONTEND=noninteractive apt-get install -y curl 2>&1 | grep -E "^(Get|Unpacking|Setting up|E:)" || true
 
 mkdir -p /etc/pihole
 SCRIPT_DIR_TMP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -148,6 +162,15 @@ curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended
 
 # Pi-hole installer may restart dnsmasq; ensure dnsmasq stays DHCP-only
 systemctl is-active --quiet dnsmasq && systemctl restart dnsmasq || true
+
+# Pi-hole v6's FTL embeds its own web server on :80/:443 by default, which would
+# collide with the pi-nat64 UI. We read stats straight from FTL's SQLite DBs, so
+# move FTL's web server to a loopback-only high port to free 80/443 for the UI.
+if command -v pihole-FTL >/dev/null 2>&1; then
+  pihole-FTL --config webserver.port '127.0.0.1:8053' 2>/dev/null \
+    || warn "Could not move FTL's web server port — watch for a port-80 clash with the UI."
+  systemctl restart pihole-FTL 2>/dev/null || true
+fi
 
 ok "Pi-hole installed."
 
@@ -252,10 +275,12 @@ ip6tables -t nat -A POSTROUTING -o "$ETH_IFACE" -j MASQUERADE
 # IPv4 fallback masquerade (for devices that fall back)
 iptables -t nat -A POSTROUTING -o "$ETH_IFACE" -j MASQUERADE
 
-# Block web UI (port 80) from the internet-facing eth0
+# Block web UI (ports 80 + 443) from the internet-facing eth0
 # Use -I to insert at the top so pre-existing ACCEPT rules don't bypass the block
-iptables  -I INPUT 1 -i "$ETH_IFACE" -p tcp --dport 80 -j DROP
-ip6tables -I INPUT 1 -i "$ETH_IFACE" -p tcp --dport 80 -j DROP
+for _port in 80 443; do
+  iptables  -I INPUT 1 -i "$ETH_IFACE" -p tcp --dport "$_port" -j DROP
+  ip6tables -I INPUT 1 -i "$ETH_IFACE" -p tcp --dport "$_port" -j DROP
+done
 
 # Block external access to DNS (Unbound) from eth0
 iptables  -I INPUT 1 -i "$ETH_IFACE" -p udp --dport 53 -j DROP
@@ -273,12 +298,38 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cp -r "$SCRIPT_DIR/web" "$INSTALL_DIR/"
 mkdir -p /etc/pi-nat64
 
-# Store SECRET_KEY in a root-only file; the unit's EnvironmentFile reads it
-printf 'SECRET_KEY=%s\n' "$SECRET_KEY" > /etc/pi-nat64/secret.env
+# Generate a self-signed TLS certificate so the UI can serve HTTPS (the admin
+# password and session cookie must not cross the Wi-Fi in cleartext).
+info "Generating self-signed TLS certificate..."
+mkdir -p /etc/pi-nat64/tls
+if [[ ! -f /etc/pi-nat64/tls/cert.pem ]]; then
+  openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout /etc/pi-nat64/tls/key.pem \
+    -out    /etc/pi-nat64/tls/cert.pem \
+    -days 3650 \
+    -subj "/CN=gateway.local" \
+    -addext "subjectAltName=DNS:gateway.local,IP:${AP_IPV4},IP:${AP_GW_IPV6}" \
+    || error "Failed to generate TLS certificate (is openssl installed?)"
+fi
+chmod 600 /etc/pi-nat64/tls/key.pem
+chmod 644 /etc/pi-nat64/tls/cert.pem
+
+# Store SECRET_KEY + TLS paths in a root-only file; the unit's EnvironmentFile reads it
+cat > /etc/pi-nat64/secret.env <<EOF
+SECRET_KEY=$SECRET_KEY
+TLS_CERT=/etc/pi-nat64/tls/cert.pem
+TLS_KEY=/etc/pi-nat64/tls/key.pem
+EOF
 chmod 600 /etc/pi-nat64/secret.env
 
-# Store admin password as SHA-256 hash (never store plaintext)
-ADMIN_PASS_HASH=$(echo -n "$ADMIN_PASS" | sha256sum | awk '{print $1}')
+# Store admin password as a salted scrypt hash (matches web/app.py format; never plaintext)
+ADMIN_PASS_HASH=$(python3 - "$ADMIN_PASS" <<'PY'
+import hashlib, os, sys
+salt = os.urandom(16)
+key = hashlib.scrypt(sys.argv[1].encode(), salt=salt, n=16384, r=8, p=1, dklen=32)
+print(f"scrypt${salt.hex()}${key.hex()}")
+PY
+)
 echo "$ADMIN_PASS_HASH" > /etc/pi-nat64/admin.passwd
 chmod 600 /etc/pi-nat64/admin.passwd
 
@@ -325,12 +376,14 @@ echo -e "  ${GREEN}Installation complete!${NC}"
 echo "  ════════════════════════════════════════════"
 echo ""
 echo "  Wi-Fi AP  : $AP_SSID  (pass: $AP_PASS)"
-echo "  Web UI    : http://gateway.local  or  http://$AP_IPV4"
-echo "  Login     : password = $ADMIN_PASS"
+echo "  Web UI    : https://gateway.local  or  https://$AP_IPV4"
+echo "              (self-signed cert — your browser will warn once; that's expected)"
+echo -e "  ${YELLOW}Admin password (randomly generated — save it now): ${ADMIN_PASS}${NC}"
+echo "  This password is shown ONLY here. Change it anytime in Settings."
 echo ""
 echo -e "  ${YELLOW}Next steps:${NC}"
 echo "  1. Connect a device to the '$AP_SSID' Wi-Fi"
-echo "  2. Open http://gateway.local in a browser"
+echo "  2. Open https://gateway.local in a browser"
 echo "  3. Change the admin password in Settings"
 echo "  4. Change the AP passphrase in Settings"
 echo "  5. Add port-forwarding rules as needed"
