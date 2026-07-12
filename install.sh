@@ -106,13 +106,24 @@ ok "Jool configured with prefix $JOOL_PREFIX"
 # ── 5. Configure Unbound (DNS64) ──────────────────────────────────────────────
 info "Configuring Unbound DNS64 (127.0.0.1:5335 — Pi-hole is the public resolver)..."
 
-# Disable systemd-resolved BEFORE starting Unbound (frees port 53 / resolv.conf)
+# Disable systemd-resolved BEFORE starting Unbound (it would hold port 53)
 if systemctl is-active --quiet systemd-resolved; then
   warn "Disabling systemd-resolved (conflicts with Unbound/Pi-hole on port 53)..."
   systemctl disable --now systemd-resolved
-  rm -f /etc/resolv.conf
-  echo "nameserver 127.0.0.1" > /etc/resolv.conf
 fi
+
+# Give the Pi itself a working resolver for the REST of the install. It must not
+# be 127.0.0.1 yet: Pi-hole (which will own :53) isn't installed and Unbound is
+# on :5335, so pointing the host at 127.0.0.1 now breaks DNS (e.g. the Pi-hole
+# download). Use public resolvers — IPv4 first, IPv6 fallback for IPv6-only
+# upstreams. Done unconditionally so re-runs (systemd-resolved already off) heal
+# a previously broken resolv.conf.
+rm -f /etc/resolv.conf
+cat > /etc/resolv.conf <<'RESOLV'
+nameserver 1.1.1.1
+nameserver 1.0.0.1
+nameserver 2606:4700:4700::1111
+RESOLV
 
 mkdir -p /etc/unbound/unbound.conf.d
 
