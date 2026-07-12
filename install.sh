@@ -46,6 +46,20 @@ echo ""
 read -rp "  Continue? [y/N] " confirm
 [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
 
+# Detect whether the Wi-Fi AP interface exists. In a VM (or on a board with no
+# Wi-Fi radio / no USB adapter plugged in) it won't — so the access-point steps
+# (hostapd, DHCP, router advertisements) are skipped and only the NAT64 / DNS64 /
+# Pi-hole / web-UI stack is configured.
+if ip link show "$AP_IFACE" >/dev/null 2>&1; then
+  HAS_AP_IFACE=true
+else
+  HAS_AP_IFACE=false
+  warn "Wi-Fi interface '$AP_IFACE' not found — the access point (hostapd, DHCP,"
+  warn "router advertisements) will be SKIPPED. NAT64, DNS64, Pi-hole and the web"
+  warn "UI are still installed. Add Wi-Fi hardware (or pass a USB adapter into the"
+  warn "VM) and re-run to enable the AP."
+fi
+
 # ── 1. System update ──────────────────────────────────────────────────────────
 info "Updating package lists..."
 apt-get update -qq
@@ -205,10 +219,6 @@ EOF
 # Uncomment DAEMON_CONF in /etc/default/hostapd
 sed -i 's|#DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
 
-# Give wlan0 a static IPv4 + IPv6 address
-ip addr add "$AP_IPV4/24" dev "$AP_IFACE" 2>/dev/null || true
-ip addr add "$AP_GW_IPV6/64" dev "$AP_IFACE" 2>/dev/null || true
-
 # Persist via /etc/network/interfaces.d/
 cat > /etc/network/interfaces.d/wlan0 <<EOF
 auto $AP_IFACE
@@ -221,9 +231,17 @@ iface $AP_IFACE inet6 static
   netmask 64
 EOF
 
-systemctl unmask hostapd
-systemctl enable --now hostapd
-ok "hostapd access point configured (SSID: $AP_SSID)."
+if $HAS_AP_IFACE; then
+  # Give wlan0 a static IPv4 + IPv6 address
+  ip addr add "$AP_IPV4/24" dev "$AP_IFACE" 2>/dev/null || true
+  ip addr add "$AP_GW_IPV6/64" dev "$AP_IFACE" 2>/dev/null || true
+  systemctl unmask hostapd
+  systemctl enable --now hostapd
+  ok "hostapd access point configured (SSID: $AP_SSID)."
+else
+  systemctl disable --now hostapd 2>/dev/null || true
+  warn "Skipped hostapd (no $AP_IFACE)."
+fi
 
 # ── 7. Configure dnsmasq (DHCP) ───────────────────────────────────────────────
 info "Configuring dnsmasq DHCP..."
@@ -241,8 +259,13 @@ address=/gateway.local/$AP_IPV4
 address=/gateway.local/$AP_GW_IPV6
 EOF
 
-systemctl enable --now dnsmasq
-ok "dnsmasq DHCP configured."
+if $HAS_AP_IFACE; then
+  systemctl enable --now dnsmasq
+  ok "dnsmasq DHCP configured."
+else
+  systemctl disable --now dnsmasq 2>/dev/null || true
+  warn "Skipped dnsmasq DHCP (no $AP_IFACE)."
+fi
 
 # ── 8. Configure radvd ────────────────────────────────────────────────────────
 info "Configuring radvd (IPv6 RA)..."
@@ -264,8 +287,13 @@ interface $AP_IFACE {
 };
 EOF
 
-systemctl enable --now radvd
-ok "radvd configured."
+if $HAS_AP_IFACE; then
+  systemctl enable --now radvd
+  ok "radvd configured."
+else
+  systemctl disable --now radvd 2>/dev/null || true
+  warn "Skipped radvd (no $AP_IFACE)."
+fi
 
 # ── 9. Kernel forwarding + iptables ──────────────────────────────────────────
 info "Enabling IP forwarding and NAT rules..."
@@ -275,9 +303,13 @@ net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
 net.ipv6.conf.default.forwarding = 1
 net.ipv6.conf.$ETH_IFACE.accept_ra = 2
-net.ipv6.conf.$AP_IFACE.accept_ra = 0
 EOF
-sysctl --system -q
+# Only pin the AP interface's accept_ra when it exists (absent in a VM, and
+# sysctl --system would otherwise error on the missing key).
+if $HAS_AP_IFACE; then
+  echo "net.ipv6.conf.$AP_IFACE.accept_ra = 0" >> /etc/sysctl.d/99-pi-nat64.conf
+fi
+sysctl --system -q 2>/dev/null || sysctl --system -q || true
 
 # IPv6 forwarding rules
 ip6tables -t nat -F POSTROUTING 2>/dev/null || true
@@ -286,12 +318,18 @@ ip6tables -t nat -A POSTROUTING -o "$ETH_IFACE" -j MASQUERADE
 # IPv4 fallback masquerade (for devices that fall back)
 iptables -t nat -A POSTROUTING -o "$ETH_IFACE" -j MASQUERADE
 
-# Block web UI (ports 80 + 443) from the internet-facing eth0
-# Use -I to insert at the top so pre-existing ACCEPT rules don't bypass the block
-for _port in 80 443; do
-  iptables  -I INPUT 1 -i "$ETH_IFACE" -p tcp --dport "$_port" -j DROP
-  ip6tables -I INPUT 1 -i "$ETH_IFACE" -p tcp --dport "$_port" -j DROP
-done
+# Block web UI (ports 80 + 443) from the internet-facing eth0.
+# Only when there's a separate AP segment — otherwise (VM / no Wi-Fi) eth0 is the
+# only way in and blocking it would make the UI unreachable.
+if $HAS_AP_IFACE; then
+  # Use -I to insert at the top so pre-existing ACCEPT rules don't bypass the block
+  for _port in 80 443; do
+    iptables  -I INPUT 1 -i "$ETH_IFACE" -p tcp --dport "$_port" -j DROP
+    ip6tables -I INPUT 1 -i "$ETH_IFACE" -p tcp --dport "$_port" -j DROP
+  done
+else
+  warn "No AP interface — leaving the web UI reachable on $ETH_IFACE (do not use this on an internet-facing host)."
+fi
 
 # Block external access to DNS (Unbound) from eth0
 iptables  -I INPUT 1 -i "$ETH_IFACE" -p udp --dport 53 -j DROP
@@ -386,18 +424,30 @@ echo "  ════════════════════════
 echo -e "  ${GREEN}Installation complete!${NC}"
 echo "  ════════════════════════════════════════════"
 echo ""
-echo "  Wi-Fi AP  : $AP_SSID  (pass: $AP_PASS)"
-echo "  Web UI    : https://gateway.local  or  https://$AP_IPV4"
+if $HAS_AP_IFACE; then
+  echo "  Wi-Fi AP  : $AP_SSID  (pass: $AP_PASS)"
+  echo "  Web UI    : https://gateway.local  or  https://$AP_IPV4"
+else
+  echo -e "  ${YELLOW}Wi-Fi AP  : SKIPPED — no '$AP_IFACE' interface (VM / no Wi-Fi hardware)${NC}"
+  echo "  Web UI    : https://<this-host-IP>   (reachable on $ETH_IFACE for testing)"
+fi
 echo "              (self-signed cert — your browser will warn once; that's expected)"
 echo -e "  ${YELLOW}Admin password (randomly generated — save it now): ${ADMIN_PASS}${NC}"
 echo "  This password is shown ONLY here. Change it anytime in Settings."
 echo ""
 echo -e "  ${YELLOW}Next steps:${NC}"
-echo "  1. Connect a device to the '$AP_SSID' Wi-Fi"
-echo "  2. Open https://gateway.local in a browser"
-echo "  3. Change the admin password in Settings"
-echo "  4. Change the AP passphrase in Settings"
-echo "  5. Add port-forwarding rules as needed"
+if $HAS_AP_IFACE; then
+  echo "  1. Connect a device to the '$AP_SSID' Wi-Fi"
+  echo "  2. Open https://gateway.local in a browser"
+  echo "  3. Change the admin password in Settings"
+  echo "  4. Change the AP passphrase in Settings"
+  echo "  5. Add port-forwarding rules as needed"
+else
+  echo "  1. Open https://<this-host-IP> in a browser (accept the cert warning)"
+  echo "  2. Log in with the admin password above"
+  echo "  3. NAT64/DNS64/Pi-hole are running; the Wi-Fi AP needs real hardware"
+  echo "  4. Test DNS64:  dig @127.0.0.1 -p 5335 ipv4only.arpa AAAA +short"
+fi
 echo ""
 echo -e "  ${YELLOW}Using a USB Wi-Fi adapter? Install drivers:${NC}"
 echo "    sudo bash install-drivers.sh --auto"
