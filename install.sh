@@ -27,7 +27,7 @@ AP_GW_IPV6="fd00::1"
 JOOL_PREFIX="64:ff9b::/96"
 # Web UI admin password — randomly generated per install and shown once at the end.
 # Override by exporting ADMIN_PASS first, e.g. ADMIN_PASS=secret sudo -E bash install.sh
-ADMIN_PASS="${ADMIN_PASS:-$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 14)}"
+ADMIN_PASS="${ADMIN_PASS:-$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 14 || true)}"
 INSTALL_DIR="/opt/pi-nat64"
 SECRET_KEY=$(tr -dc 'A-Za-z0-9!@^&*' </dev/urandom | head -c 32 || true)
 
@@ -84,7 +84,8 @@ ok "Packages installed."
 # ── 3. Load Jool kernel module ────────────────────────────────────────────────
 info "Loading Jool kernel module..."
 modprobe jool || error "Failed to load the Jool kernel module — the jool-dkms build may have failed. Check: dkms status"
-lsmod | grep -q '^jool' || error "Jool module is not loaded — NAT64 will not work."
+# Use /sys/module (no pipe) — 'lsmod | grep -q' can return SIGPIPE under pipefail
+[[ -d /sys/module/jool ]] || error "Jool module is not loaded — NAT64 will not work."
 grep -qxF 'jool' /etc/modules || echo 'jool' >> /etc/modules
 ok "Jool module loaded."
 
