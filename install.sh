@@ -123,7 +123,7 @@ UBMAIN
 
 cat > /etc/unbound/unbound.conf.d/dns64.conf <<EOF
 server:
-  interface: 127.0.0.1@5335
+  interface: 127.0.0.1
   port: 5335
   access-control: 0.0.0.0/0 refuse
   access-control: ::/0 refuse
@@ -131,10 +131,9 @@ server:
   do-ip4: yes
   do-ip6: yes
   auto-trust-anchor-file: "/var/lib/unbound/root.key"
+  # DNS64: the prefix is a server-clause option (there is no "dns64:" section)
   module-config: "dns64 iterator"
-
-dns64:
-  prefix: $JOOL_PREFIX
+  dns64-prefix: $JOOL_PREFIX
 
 forward-zone:
   name: "."
