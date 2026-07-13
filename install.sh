@@ -74,12 +74,10 @@ if ! apt-get install -y --no-install-recommends "linux-headers-$(uname -r)"; the
     || error "Could not install kernel headers — the Jool NAT64 module cannot be built."
 fi
 
-# NOTE: no '| grep ... || true' wrapper — that would mask apt failures under
-# 'set -o pipefail' and report a broken install as success. Let set -e abort.
+# Core packages — fatal on failure (no '| grep ... || true' wrapper, which would
+# mask apt errors under pipefail and report a broken install as success).
 info "Installing packages..."
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
-  jool-tools \
-  jool-dkms \
   unbound \
   hostapd \
   dnsmasq \
@@ -95,27 +93,53 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
   curl
 ok "Packages installed."
 
+# Jool (NAT64) — install separately and TOLERATE build failure. jool-dkms builds
+# for every installed kernel; a very new kernel (e.g. 6.18, which Jool 4.1.x does
+# not yet support — NICMx/Jool PR #441) can fail the build and make apt return an
+# error even when the RUNNING kernel built fine. So don't let it abort the whole
+# install — verify the module on the running kernel below instead.
+info "Installing Jool (NAT64)..."
+DEBIAN_FRONTEND=noninteractive apt-get install -y jool-tools jool-dkms \
+  || warn "jool-dkms reported build errors (often only for a non-running kernel) — verifying the module next."
+
 # ── 3. Load Jool kernel module ────────────────────────────────────────────────
 info "Loading Jool kernel module..."
-modprobe jool || error "Failed to load the Jool kernel module — the jool-dkms build may have failed. Check: dkms status"
-# Use /sys/module (no pipe) — 'lsmod | grep -q' can return SIGPIPE under pipefail
-[[ -d /sys/module/jool ]] || error "Jool module is not loaded — NAT64 will not work."
-grep -qxF 'jool' /etc/modules || echo 'jool' >> /etc/modules
-ok "Jool module loaded."
+modprobe jool 2>/dev/null || true
+if [[ -d /sys/module/jool ]]; then
+  grep -qxF 'jool' /etc/modules || echo 'jool' >> /etc/modules
+  ok "Jool module loaded — NAT64 available."
+  JOOL_OK=true
+else
+  JOOL_OK=false
+  warn "════════════════════════════════════════════════════════════════"
+  warn "The Jool NAT64 module could NOT be loaded on kernel $(uname -r)."
+  warn "jool-dkms failed to build against this kernel (see: dkms status,"
+  warn "and /var/lib/dkms/jool/*/build/make.log). Kernel 6.18+ is not yet"
+  warn "supported by Jool 4.1.x (upstream fix: NICMx/Jool PR #441)."
+  warn ""
+  warn "NAT64 will not work until this is resolved, but DNS64, Pi-hole and"
+  warn "the web UI will still be installed. Options: boot a kernel Jool"
+  warn "supports (<= 6.12), or build Jool with the PR #441 patch."
+  warn "════════════════════════════════════════════════════════════════"
+fi
 
 # ── 4. Configure Jool (NAT64) ─────────────────────────────────────────────────
-info "Configuring Jool NAT64..."
-jool instance add "default" --netfilter --pool6 "$JOOL_PREFIX" 2>/dev/null || true
+if $JOOL_OK; then
+  info "Configuring Jool NAT64..."
+  jool instance add "default" --netfilter --pool6 "$JOOL_PREFIX" 2>/dev/null || true
 
-# Persist via rc.local
-cat > /etc/rc.local <<EOF
+  # Persist via rc.local
+  cat > /etc/rc.local <<EOF
 #!/bin/bash
 modprobe jool
 jool instance add "default" --netfilter --pool6 $JOOL_PREFIX 2>/dev/null || true
 exit 0
 EOF
-chmod +x /etc/rc.local
-ok "Jool configured with prefix $JOOL_PREFIX"
+  chmod +x /etc/rc.local
+  ok "Jool configured with prefix $JOOL_PREFIX"
+else
+  warn "Skipping Jool NAT64 configuration (module not loaded)."
+fi
 
 # ── 5. Configure Unbound (DNS64) ──────────────────────────────────────────────
 info "Configuring Unbound DNS64 (127.0.0.1:5335 — Pi-hole is the public resolver)..."
@@ -424,6 +448,12 @@ echo "  ════════════════════════
 echo -e "  ${GREEN}Installation complete!${NC}"
 echo "  ════════════════════════════════════════════"
 echo ""
+if $JOOL_OK; then
+  echo -e "  NAT64     : ${GREEN}active${NC}  (Jool, prefix $JOOL_PREFIX)"
+else
+  echo -e "  NAT64     : ${RED}NOT active${NC} — Jool module failed to build on kernel $(uname -r)"
+  echo "              DNS64/Pi-hole/UI work; see the warning above to enable NAT64."
+fi
 if $HAS_AP_IFACE; then
   echo "  Wi-Fi AP  : $AP_SSID  (pass: $AP_PASS)"
   echo "  Web UI    : https://gateway.local  or  https://$AP_IPV4"
