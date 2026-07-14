@@ -118,8 +118,9 @@ else
   warn "supported by Jool 4.1.x (upstream fix: NICMx/Jool PR #441)."
   warn ""
   warn "NAT64 will not work until this is resolved, but DNS64, Pi-hole and"
-  warn "the web UI will still be installed. Options: boot a kernel Jool"
-  warn "supports (<= 6.12), or build Jool with the PR #441 patch."
+  warn "the web UI will still be installed. To fix NAT64 on kernel 6.18+,"
+  warn "run the bundled helper after this install finishes:"
+  warn "    sudo bash fix-jool.sh"
   warn "════════════════════════════════════════════════════════════════"
 fi
 
