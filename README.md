@@ -141,6 +141,7 @@ The installer generates a **random admin password and prints it once** at the en
 pi-nat64/
 ├── install.sh                  ← one-shot installer, run as root
 ├── install-drivers.sh          ← optional USB Wi-Fi adapter driver installer
+├── fix-jool.sh                 ← rebuild Jool NAT64 on kernel 6.18+ (PR #441 patch)
 ├── docs/
 │   └── index.html              ← interactive UI demo (GitHub Pages)
 ├── configs/
@@ -203,6 +204,7 @@ dig @fd00::1 example.com AAAA
 | No Wi-Fi AP visible | `systemctl status hostapd` — verify `country_code` in `/etc/hostapd/hostapd.conf` |
 | USB adapter not detected | `lsusb` — check adapter is listed; run `sudo bash install-drivers.sh --auto` |
 | IPv4 sites unreachable | `jool session display` — sessions should appear; check `ip6tables -t nat -L` |
+| Jool fails to build on kernel 6.18+ | `sudo bash fix-jool.sh` — applies the upstream [PR #441](https://github.com/NICMx/Jool/pull/441) patch and rebuilds the DKMS module |
 | Ads still showing | `pihole status` — should say `active`; run `pihole -g` to refresh blocklists |
 | DNS not resolving | `dig @127.0.0.1 -p 5335 google.com AAAA` (Unbound); `dig @fd00::1 google.com AAAA` (Pi-hole) |
 | Blocking tab shows `—` or `0` | Stats are read from `/etc/pihole/pihole-FTL.db` and `/etc/pihole/gravity.db` — confirm `systemctl status pihole-FTL` is active and those files exist |
