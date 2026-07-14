@@ -60,6 +60,24 @@ else
   warn "VM) and re-run to enable the AP."
 fi
 
+# ── 0. Heal a dpkg state broken by a previous failed run ──────────────────────
+# A failed jool-dkms build leaves dpkg half-configured; every apt call (ours AND
+# Pi-hole's installer) then re-attempts the failing configure and aborts. Repair
+# it up front so re-running this installer works.
+if ! dpkg --configure -a 2>/dev/null; then
+  warn "dpkg is in a broken state (likely a failed jool-dkms build from a previous run)."
+  JOOL_FIX_PRE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fix-jool.sh"
+  if [[ -f "$JOOL_FIX_PRE" ]] && ls /usr/src/jool-* >/dev/null 2>&1; then
+    warn "Attempting automatic Jool fix (PR #441 patch + rebuild)..."
+    bash "$JOOL_FIX_PRE" || warn "Automatic Jool fix failed."
+  fi
+  if ! dpkg --configure -a 2>/dev/null; then
+    warn "Still broken — removing jool-dkms to unblock apt (retry NAT64 later with fix-jool.sh)."
+    dpkg --remove --force-remove-reinstreq jool-dkms 2>/dev/null || true
+    dpkg --configure -a || true
+  fi
+fi
+
 # ── 1. System update ──────────────────────────────────────────────────────────
 info "Updating package lists..."
 apt-get update -qq
@@ -105,22 +123,37 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y jool-tools jool-dkms \
 # ── 3. Load Jool kernel module ────────────────────────────────────────────────
 info "Loading Jool kernel module..."
 modprobe jool 2>/dev/null || true
+
+# If the module didn't load (kernel 6.18+ breaks Jool 4.1.x — NICMx/Jool
+# PR #441), try the bundled patch/rebuild helper automatically.
+if [[ ! -d /sys/module/jool ]]; then
+  JOOL_FIX="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fix-jool.sh"
+  if [[ -f "$JOOL_FIX" ]]; then
+    warn "Jool module failed to load — attempting automatic fix (PR #441 patch + rebuild)..."
+    bash "$JOOL_FIX" || warn "Automatic Jool fix failed."
+  fi
+fi
+
 if [[ -d /sys/module/jool ]]; then
   grep -qxF 'jool' /etc/modules || echo 'jool' >> /etc/modules
   ok "Jool module loaded — NAT64 available."
   JOOL_OK=true
 else
   JOOL_OK=false
+  # CRITICAL: the failed jool-dkms postinst leaves dpkg in a broken state, and
+  # every later apt run (including Pi-hole's dependency install) re-attempts the
+  # failing configure and aborts. Remove the broken package so the rest of the
+  # install can use apt; NAT64 can be reinstalled later.
+  warn "Removing broken jool-dkms so apt works for the rest of the install..."
+  dpkg --remove --force-remove-reinstreq jool-dkms 2>/dev/null || true
+  dpkg --configure -a 2>/dev/null || true
   warn "════════════════════════════════════════════════════════════════"
-  warn "The Jool NAT64 module could NOT be loaded on kernel $(uname -r)."
-  warn "jool-dkms failed to build against this kernel (see: dkms status,"
-  warn "and /var/lib/dkms/jool/*/build/make.log). Kernel 6.18+ is not yet"
-  warn "supported by Jool 4.1.x (upstream fix: NICMx/Jool PR #441)."
-  warn ""
-  warn "NAT64 will not work until this is resolved, but DNS64, Pi-hole and"
-  warn "the web UI will still be installed. To fix NAT64 on kernel 6.18+,"
-  warn "run the bundled helper after this install finishes:"
-  warn "    sudo bash fix-jool.sh"
+  warn "The Jool NAT64 module could NOT be built/loaded on kernel $(uname -r),"
+  warn "and the automatic fix did not succeed (see /var/lib/dkms/jool/*/build/make.log)."
+  warn "NAT64 is disabled; DNS64, Pi-hole and the web UI will still be installed."
+  warn "To retry NAT64 later:"
+  warn "    sudo apt-get install -y jool-dkms || true   # build may fail — expected"
+  warn "    sudo bash fix-jool.sh                       # patches + rebuilds + repairs"
   warn "════════════════════════════════════════════════════════════════"
 fi
 
