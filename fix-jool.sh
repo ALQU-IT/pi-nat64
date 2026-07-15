@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# fix-jool.sh — make Jool (NAT64) build on Linux kernel 6.18+
+# fix-jool.sh — make Jool (NAT64) build on Linux kernel 6.15+/6.18+
 #
-# Jool 4.1.x fails to compile against kernel 6.18 because the kernel renamed
-# the flowi4_tos field to flowi4_dscp. Upstream fix: NICMx/Jool PR #441
-# (not yet in a release). This script applies that patch to the installed
-# jool-dkms source, rebuilds the module for the running kernel, repairs the
-# dpkg/apt state, and finishes the NAT64 configuration that install.sh
-# skipped when the module was unavailable.
+# Debian's Jool 4.1.13 fails to compile against recent kernels for two reasons:
+#   1. kernel 6.18 renamed flowi4_tos -> flowi4_dscp
+#      (upstream fix: NICMx/Jool PR #441, not in a release yet)
+#   2. kernel 6.15 removed del_timer_sync() -> timer_delete_sync()
+#      (fixed the same way in upstream Jool master's timer.c)
+#
+# This script applies both patches to the installed jool-dkms source, rebuilds
+# the module for the running kernel, repairs the dpkg/apt state, and finishes
+# the NAT64 configuration that install.sh skipped when the module was
+# unavailable.
 #
 # Usage:  sudo bash fix-jool.sh
-# Safe to re-run: the patch is skipped if already applied.
+# Safe to re-run: patches are skipped if already applied.
 
 set -euo pipefail
 
@@ -76,6 +80,37 @@ EOF
     error "Patch did not apply cleanly to Jool $JOOL_VER — the source may differ. See https://github.com/NICMx/Jool/pull/441"
   fi
   rm -f "$PATCH_FILE"
+fi
+
+# ── Patch 2: del_timer_sync() was removed in kernel 6.15 ──────────────────────
+# Upstream Jool master gates it exactly like this in src/mod/common/timer.c;
+# timer.c already includes linux_version.h (it uses the same macro for
+# timer_setup), so a guarded in-place edit is safe.
+TIMER_C="$JOOL_SRC/src/mod/common/timer.c"
+if [[ -f "$TIMER_C" ]]; then
+  if grep -q 'timer_delete_sync' "$TIMER_C"; then
+    ok "timer patch already applied — skipping."
+  elif grep -q $'^\tdel_timer_sync(&timer);$' "$TIMER_C"; then
+    info "Patching timer.c (del_timer_sync was removed in kernel 6.15)..."
+    python3 - "$TIMER_C" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    src = f.read()
+old = "\tdel_timer_sync(&timer);\n"
+new = ("#if LINUX_VERSION_AT_LEAST(6, 2, 0, 9, 3)\n"
+       "\ttimer_delete_sync(&timer);\n"
+       "#else\n"
+       "\tdel_timer_sync(&timer);\n"
+       "#endif\n")
+assert src.count(old) == 1, f"expected exactly one del_timer_sync line, found {src.count(old)}"
+with open(path, "w") as f:
+    f.write(src.replace(old, new))
+PY
+    ok "timer patch applied."
+  else
+    warn "timer.c does not contain the expected del_timer_sync line — skipping (build may still work)."
+  fi
 fi
 
 # ── Rebuild the module for the running kernel ─────────────────────────────────
