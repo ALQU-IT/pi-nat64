@@ -12,7 +12,9 @@
 # the NAT64 configuration that install.sh skipped when the module was
 # unavailable.
 #
-# Usage:  sudo bash fix-jool.sh
+# Usage:  sudo bash fix-jool.sh [--no-config]
+#   --no-config  only patch/rebuild/load the module (install.sh configures the
+#                NAT64 instance itself)
 # Safe to re-run: patches are skipped if already applied.
 
 set -euo pipefail
@@ -24,6 +26,9 @@ error() { echo -e "${RED}[✗]${NC} $*"; exit 1; }
 ok()    { echo -e "${GREEN}[✓]${NC} $*"; }
 
 [[ $EUID -eq 0 ]] || error "Run as root:  sudo bash fix-jool.sh"
+
+CONFIGURE=true
+[[ "${1:-}" == "--no-config" ]] && CONFIGURE=false
 
 JOOL_PREFIX="64:ff9b::/96"
 KVER=$(uname -r)
@@ -126,25 +131,42 @@ dpkg --configure -a || warn "dpkg --configure -a reported issues — check 'dkms
 
 # ── Load and verify ───────────────────────────────────────────────────────────
 info "Loading Jool module..."
-modprobe jool
+modprobe jool || error "Module built but failed to load — check: journalctl -k | tail -20"
 [[ -d /sys/module/jool ]] || error "Module built but failed to load — check: journalctl -k | tail -20"
 ok "Jool module loaded."
 
+if ! $CONFIGURE; then
+  exit 0
+fi
+
 # ── Finish the NAT64 config install.sh skipped ────────────────────────────────
+# Same persistent unit install.sh creates (older versions used /etc/rc.local).
 info "Configuring NAT64 instance (prefix $JOOL_PREFIX)..."
 grep -qxF 'jool' /etc/modules || echo 'jool' >> /etc/modules
-jool instance add "default" --netfilter --pool6 "$JOOL_PREFIX" 2>/dev/null \
-  || warn "Jool instance already exists — leaving it as-is."
+if [[ -f /etc/rc.local ]] && grep -q 'jool instance add "default"' /etc/rc.local; then
+  sed -i -e '/^modprobe jool$/d' -e '/jool instance add "default"/d' /etc/rc.local
+fi
+cat > /etc/systemd/system/pi-nat64-jool.service <<EOF
+[Unit]
+Description=pi-nat64 Jool NAT64 instance
+After=network-pre.target
+Before=network.target
 
-cat > /etc/rc.local <<EOF
-#!/bin/bash
-modprobe jool
-jool instance add "default" --netfilter --pool6 $JOOL_PREFIX 2>/dev/null || true
-exit 0
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/sbin/modprobe jool
+ExecStart=/bin/sh -c 'jool -i default global display >/dev/null 2>&1 || jool instance add default --netfilter --pool6 $JOOL_PREFIX'
+ExecStop=-/usr/bin/jool instance remove default
+
+[Install]
+WantedBy=multi-user.target
 EOF
-chmod +x /etc/rc.local
+systemctl daemon-reload
+systemctl enable pi-nat64-jool
+systemctl restart pi-nat64-jool || error "pi-nat64-jool failed to start — see: journalctl -u pi-nat64-jool"
 
 echo ""
 ok "NAT64 is active. Verify with:  jool instance display"
 warn "Note: a future kernel upgrade may hit the same problem until Jool ships"
-warn "a release containing PR #441 — re-run this script if NAT64 stops loading."
+warn "a release containing these fixes — re-run this script if NAT64 stops loading."
