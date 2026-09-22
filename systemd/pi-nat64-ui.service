@@ -1,3 +1,5 @@
+# Reference copy — install.sh writes /etc/systemd/system/pi-nat64-ui.service.
+# secret.env holds SECRET_KEY, TLS_CERT/TLS_KEY and AP_IFACE/WAN_IFACE.
 [Unit]
 Description=pi-nat64 Web UI
 After=network.target hostapd.service unbound.service pihole-FTL.service

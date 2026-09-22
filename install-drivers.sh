@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
-# USB Wi-Fi adapter driver installer — Raspberry Pi 5 (Raspbian bookworm)
+# USB Wi-Fi adapter driver/firmware installer — Raspberry Pi 5 (Raspberry Pi OS
+# bookworm / trixie).
 #
-# Supported chipsets:
-#   RTL8812AU / RTL8821AU   out-of-tree DKMS  (aircrack-ng/rtl8812au)
-#   RTL8814AU               out-of-tree DKMS  (morrownr/8814au)
-#   RTL8188EUS              out-of-tree DKMS  (aircrack-ng/rtl8188eus)
-#   MT7610U / MT7612U       in-kernel mt76    (firmware-misc-nonfree)
-#   AR9271                  in-kernel ath9k   (firmware-ath9k-htc)
-#   MT7921U                 in-kernel mt7921u (firmware-misc-nonfree, kernel ≥5.18)
-#   RTL8852BU / RTL8832BU   out-of-tree DKMS  (morrownr/rtl8852bu-20240418)
+# Recent kernels ship drivers for all supported chipsets, so on a current
+# kernel this usually only installs FIRMWARE. An out-of-tree DKMS driver is
+# built only when the running kernel lacks the in-kernel one.
+#
+#   Chipset                 In-kernel driver (since)      Fallback (older kernels)
+#   RTL8812AU               rtw88_8812au   (6.13)         DKMS aircrack-ng/rtl8812au
+#   RTL8821AU               rtw88_8821au   (6.13)         DKMS aircrack-ng/rtl8812au
+#   RTL8814AU               rtw88_8814au   (6.16)         DKMS morrownr/8814au
+#   RTL8188EU(S)            rtl8xxxu                      DKMS aircrack-ng/rtl8188eus
+#   RTL8852BU / RTL8832BU   rtw89_8852bu   (6.17)         DKMS morrownr/rtl8852bu-20250826
 #     └─ includes: BrosTrend AX1L / AX4L AX1800
+#   MT7610U / MT7612U       mt76x0u / mt76x2u             —   (firmware-misc-nonfree)
+#   MT7921U                 mt7921u        (5.18)         —   (firmware-misc-nonfree)
+#   AR9271                  ath9k_htc                     —   (firmware-ath9k-htc)
 #
 # Usage:
 #   sudo bash install-drivers.sh            # interactive menu
@@ -27,8 +33,14 @@ die()   { error "$*"; exit 1; }
 [[ $EUID -eq 0 ]] || die "Run as root:  sudo bash install-drivers.sh"
 
 ARCH=$(uname -m)
-BUILD_DIR=/tmp/pi-nat64-drivers
-mkdir -p "$BUILD_DIR"
+KVER=$(uname -r)
+APT=(apt-get -o DPkg::Lock::Timeout=300)
+export DEBIAN_FRONTEND=noninteractive
+
+# Private, unpredictable build dir (a fixed /tmp path could be pre-created by
+# another local user and swapped for their code before we build it as root).
+BUILD_DIR=$(mktemp -d /tmp/pi-nat64-drivers.XXXXXX)
+trap 'rm -rf "$BUILD_DIR"' EXIT
 
 # ── USB ID → driver-group table ───────────────────────────────────────────────
 declare -A USB_ID_TO_GROUP=()
@@ -52,13 +64,13 @@ _add rtl8821au \
   0846:9052 7392:a811 7392:a812 7392:a813 7392:b611 \
   2001:3314 2001:3318 2019:ab32
 
-# RTL8814AU — Alfa AWUS1900, ASUS USB-AC68, Edimax EW-7833UAC (AC1900)
+# RTL8814AU — Alfa AWUS1900, ASUS USB-AC68 (AC1900)
 _add rtl8814au \
   0bda:8813 0b05:1817 13d3:3487 2001:331a
 
-# RTL8188EUS — TP-Link TL-WN725N v3, various N150 dongles
+# RTL8188EU(S) — TP-Link TL-WN725N v2/v3, various N150 dongles
 _add rtl8188eus \
-  0bda:8179 0bda:8178 0bda:0179 2001:330f
+  0bda:8179 0bda:0179 2001:330f
 
 # MT7610U — Alfa AWUS036ACHM, Panda PAU0A/PAU0B (AC600 dual-band)
 _add mt76 \
@@ -70,7 +82,7 @@ _add mt76 \
 
 # AR9271 — Alfa AWUS036NHA, TP-Link TL-WN722N v1 (N150)
 _add ath9k \
-  0cf3:9271 0cf3:7010 0846:9030 0cf3:b004 07d1:3a09
+  0cf3:9271 0cf3:7010 0846:9030
 
 # MT7921U — Alfa AWUS036AXML, Panda PAU0F, Netgear A8000, BrosTrend AX9L (AX1800/AXE3000)
 _add mt7921u \
@@ -78,7 +90,8 @@ _add mt7921u \
 
 # RTL8852BU / RTL8832BU — BrosTrend AX1L / AX4L AX1800, D-Link DWA-183
 _add rtl8852bu \
-  0bda:b832 0bda:b852 0bda:885a 0bda:c832 2001:3323
+  0bda:b832 0bda:b83a 0bda:b852 0bda:b85a 0bda:a85b 0bda:885a \
+  2001:3323 2001:3327
 
 # ── Detect connected adapters ─────────────────────────────────────────────────
 declare -a DETECTED_GROUPS=()
@@ -86,6 +99,7 @@ declare -a DETECTED_GROUPS=()
 detect_connected() {
   declare -A _seen=()
   local found=0
+  command -v lsusb >/dev/null 2>&1 || { "${APT[@]}" install -y usbutils >/dev/null 2>&1 || true; }
   while IFS= read -r line; do
     local id
     id=$(printf '%s' "$line" | grep -oP 'ID \K[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}' | tr '[:upper:]' '[:lower:]' || true)
@@ -95,40 +109,71 @@ detect_connected() {
     _seen[$grp]=1
     DETECTED_GROUPS+=("$grp")
     found=1
-  done < <(lsusb 2>/dev/null)
+  done < <(lsusb 2>/dev/null || true)
   return $(( 1 - found ))
 }
 
+# Does the running kernel have this (in-tree) module?
+have_module() { modinfo "$1" >/dev/null 2>&1; }
+
 # ── Prerequisites ─────────────────────────────────────────────────────────────
-install_prereqs() {
-  info "Installing build prerequisites…"
-  apt-get update -qq
-  # Try distro kernel headers first, fall back to RPi-specific package
-  apt-get install -y --no-install-recommends build-essential dkms git \
-    "linux-headers-$(uname -r)" 2>/dev/null \
-    || apt-get install -y --no-install-recommends \
-         build-essential dkms git raspberrypi-kernel-headers
+heal_dpkg() {
+  # A failed DKMS build (e.g. jool-dkms on a new kernel) leaves dpkg
+  # half-configured and makes every apt-get call fail.
+  dpkg --configure -a >/dev/null 2>&1 \
+    || warn "dpkg reports unconfigured packages — if apt fails below, run: sudo bash fix-jool.sh"
 }
 
-# Ensure the non-free section is enabled (needed for firmware packages)
+PREREQS_DONE=false
+install_build_prereqs() {
+  $PREREQS_DONE && return 0
+  info "Installing build prerequisites and kernel headers for $KVER…"
+  "${APT[@]}" install -y --no-install-recommends build-essential dkms git bc
+  if ! "${APT[@]}" install -y --no-install-recommends "linux-headers-$KVER"; then
+    local hdr
+    case "$KVER" in
+      *2712*) hdr=linux-headers-rpi-2712 ;;
+      *v8*)   hdr=linux-headers-rpi-v8 ;;
+      *)      hdr=raspberrypi-kernel-headers ;;
+    esac
+    warn "linux-headers-$KVER not found — trying $hdr"
+    "${APT[@]}" install -y --no-install-recommends "$hdr" || true
+  fi
+  [[ -d "/lib/modules/$KVER/build" ]] \
+    || die "No kernel headers for $KVER (/lib/modules/$KVER/build missing) — can't build DKMS drivers."
+  PREREQS_DONE=true
+}
+
+# Ensure the non-free firmware components are enabled (firmware packages)
 enable_nonfree() {
-  if apt-cache show firmware-misc-nonfree &>/dev/null; then
+  if apt-cache show firmware-misc-nonfree &>/dev/null && apt-cache show firmware-realtek &>/dev/null; then
     return 0  # already reachable
   fi
   info "Enabling non-free firmware repository…"
+  # bookworm: one-line sources.list
   if [[ -f /etc/apt/sources.list ]]; then
-    sed -i \
-      '/^deb .*bookworm.*main/s/main$/main contrib non-free non-free-firmware/' \
+    sed -i -E '/^deb .*debian.* (bookworm|trixie)[^ ]* main$/s/main$/main contrib non-free non-free-firmware/' \
       /etc/apt/sources.list
   fi
-  apt-get update -qq
+  # trixie+: deb822 .sources files
+  local f
+  for f in /etc/apt/sources.list.d/*.sources; do
+    [[ -f $f ]] || continue
+    grep -q 'debian' "$f" || continue
+    sed -i -E '/^Components:/{/non-free-firmware/!s/$/ non-free-firmware/}' "$f"
+  done
+  "${APT[@]}" update -qq
 }
 
-# ── Out-of-tree driver installers ─────────────────────────────────────────────
+install_firmware() {
+  enable_nonfree
+  "${APT[@]}" install -y "$@"
+}
+
+# ── Out-of-tree DKMS fallback (only for kernels without the in-tree driver) ────
 
 _clone_and_enter() {
   local url=$1 dir=$2
-  rm -rf "$dir"
   git clone --depth=1 "$url" "$dir"
   cd "$dir"
 }
@@ -142,66 +187,103 @@ _arm64_patch_makefile() {
   fi
 }
 
-install_rtl8812au() {
-  info "Installing RTL8812AU / RTL8821AU driver…"
-  _clone_and_enter https://github.com/aircrack-ng/rtl8812au.git "$BUILD_DIR/rtl8812au"
-  [[ $ARCH == aarch64 ]] && _arm64_patch_makefile
-  make dkms_install
-  info "RTL8812AU / RTL8821AU installed."
+# Remove an already-registered copy of the module described by ./dkms.conf so
+# `dkms add` doesn't fail with "already contains" on a re-run.
+_dkms_forget_existing() {
+  [[ -f dkms.conf ]] || return 0
+  local name ver
+  name=$(sed -n 's/^PACKAGE_NAME="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' dkms.conf | head -1)
+  ver=$(sed -n 's/^PACKAGE_VERSION="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' dkms.conf | head -1)
+  [[ -n $name && -n $ver ]] || return 0
+  if dkms status -m "$name" -v "$ver" 2>/dev/null | grep -q .; then
+    dkms remove -m "$name" -v "$ver" --all >/dev/null 2>&1 || true
+  fi
+  rm -rf "/usr/src/$name-$ver"
 }
 
-install_rtl8821au() { install_rtl8812au; }
-
-install_rtl8814au() {
-  info "Installing RTL8814AU driver…"
-  _clone_and_enter https://github.com/morrownr/8814au.git "$BUILD_DIR/8814au"
-  bash install-driver.sh NoPrompt
-  info "RTL8814AU installed."
-}
-
-install_rtl8188eus() {
-  info "Installing RTL8188EUS driver…"
-  _clone_and_enter https://github.com/aircrack-ng/rtl8188eus.git "$BUILD_DIR/rtl8188eus"
-  [[ $ARCH == aarch64 ]] && _arm64_patch_makefile
-  make dkms_install
-  info "RTL8188EUS installed."
-}
-
-install_rtl8852bu() {
-  info "Installing RTL8832BU / RTL8852BU driver (BrosTrend AX1L / AX4L Model AX4)…"
-  _clone_and_enter \
-    https://github.com/morrownr/rtl8852bu-20250826.git \
-    "$BUILD_DIR/rtl8852bu"
+_dkms_from_git() {   # url dir
+  install_build_prereqs
+  warn "The running kernel has no in-tree driver — building an out-of-tree DKMS module."
+  warn "These track upstream HEAD and may not build on newer kernels."
+  _clone_and_enter "$1" "$BUILD_DIR/$2"
+  _dkms_forget_existing
   if [[ -f install-driver.sh ]]; then
     bash install-driver.sh NoPrompt
   else
     [[ $ARCH == aarch64 ]] && _arm64_patch_makefile
     make dkms_install
   fi
-  info "RTL8852BU / RTL8832BU installed."
+  cd - >/dev/null
 }
 
-# ── Firmware-only installers (in-kernel drivers) ──────────────────────────────
+# ── Per-chipset installers ────────────────────────────────────────────────────
+
+install_rtl8812au() {
+  if have_module rtw88_8812au; then
+    info "RTL8812AU: using the in-kernel rtw88_8812au driver — installing firmware…"
+    install_firmware firmware-realtek
+  else
+    _dkms_from_git https://github.com/aircrack-ng/rtl8812au.git rtl8812au
+  fi
+  info "RTL8812AU ready."
+}
+
+install_rtl8821au() {
+  if have_module rtw88_8821au; then
+    info "RTL8821AU: using the in-kernel rtw88_8821au driver — installing firmware…"
+    install_firmware firmware-realtek
+  else
+    _dkms_from_git https://github.com/aircrack-ng/rtl8812au.git rtl8812au
+  fi
+  info "RTL8821AU ready."
+}
+
+install_rtl8814au() {
+  if have_module rtw88_8814au; then
+    info "RTL8814AU: using the in-kernel rtw88_8814au driver — installing firmware…"
+    install_firmware firmware-realtek
+  else
+    _dkms_from_git https://github.com/morrownr/8814au.git 8814au
+  fi
+  info "RTL8814AU ready."
+}
+
+install_rtl8188eus() {
+  if have_module rtl8xxxu; then
+    info "RTL8188EU(S): using the in-kernel rtl8xxxu driver — installing firmware…"
+    install_firmware firmware-realtek
+  else
+    _dkms_from_git https://github.com/aircrack-ng/rtl8188eus.git rtl8188eus
+  fi
+  info "RTL8188EU(S) ready."
+}
+
+install_rtl8852bu() {
+  if have_module rtw89_8852bu; then
+    info "RTL8832BU / RTL8852BU: using the in-kernel rtw89_8852bu driver — installing firmware…"
+    install_firmware firmware-realtek
+  else
+    _dkms_from_git https://github.com/morrownr/rtl8852bu-20250826.git rtl8852bu
+  fi
+  info "RTL8852BU / RTL8832BU ready (BrosTrend AX1L / AX4L)."
+}
 
 install_mt76() {
   info "Installing MediaTek MT7610U / MT7612U firmware (in-kernel mt76 driver)…"
-  enable_nonfree
-  apt-get install -y firmware-misc-nonfree
+  install_firmware firmware-misc-nonfree
   info "MT7610U / MT7612U firmware installed."
 }
 
 install_ath9k() {
   info "Installing Atheros AR9271 firmware (in-kernel ath9k_htc driver)…"
   enable_nonfree
-  apt-get install -y firmware-ath9k-htc 2>/dev/null \
-    || apt-get install -y firmware-atheros
+  "${APT[@]}" install -y firmware-ath9k-htc || "${APT[@]}" install -y firmware-atheros
   info "AR9271 firmware installed."
 }
 
 install_mt7921u() {
   info "Installing MediaTek MT7921U firmware (in-kernel mt7921u driver, kernel ≥5.18)…"
-  enable_nonfree
-  apt-get install -y firmware-misc-nonfree
+  install_firmware firmware-misc-nonfree
   info "MT7921U firmware installed."
 }
 
@@ -224,9 +306,10 @@ do_install() {
 # ── Driver menu entries ───────────────────────────────────────────────────────
 # Format: "group|display label"
 MENU_ENTRIES=(
-  "rtl8812au|RTL8812AU / RTL8821AU   AC1200/AC600  Alfa AWUS036ACH, TP-Link Archer T4U/T2U"
+  "rtl8812au|RTL8812AU               AC1200        Alfa AWUS036ACH, TP-Link Archer T4U"
+  "rtl8821au|RTL8821AU               AC600         TP-Link Archer T2U / T2U Nano"
   "rtl8814au|RTL8814AU               AC1900        Alfa AWUS1900, ASUS USB-AC68"
-  "rtl8188eus|RTL8188EUS             N150          TP-Link TL-WN725N v3"
+  "rtl8188eus|RTL8188EU(S)           N150          TP-Link TL-WN725N v2/v3"
   "mt76|MT7610U / MT7612U            AC600/AC1200  Alfa AWUS036ACHM / AWUS036ACM"
   "ath9k|AR9271                      N150          Alfa AWUS036NHA, TP-Link TL-WN722N v1"
   "mt7921u|MT7921U                   AX1800        Alfa AWUS036AXML, Panda PAU0F, BrosTrend AX9L"
@@ -238,7 +321,7 @@ MENU_ENTRIES=(
 AUTO_DETECT=false
 INSTALL_ALL=false
 
-for arg in "${@:-}"; do
+for arg in "$@"; do
   case $arg in
     --auto)    AUTO_DETECT=true ;;
     --all)     INSTALL_ALL=true ;;
@@ -250,6 +333,7 @@ for arg in "${@:-}"; do
       echo "  --all      install all supported drivers"
       exit 0
       ;;
+    *) die "Unknown option: $arg (see --help)" ;;
   esac
 done
 
@@ -272,24 +356,24 @@ elif $AUTO_DETECT; then
   SELECTED_GROUPS=("${DETECTED_GROUPS[@]}")
 
 else
-  # Interactive menu
+  [[ -t 0 ]] || die "No terminal for the menu — use --auto or --all"
   detect_connected 2>/dev/null || true
 
   echo
   printf "${BOLD}Available Wi-Fi adapter drivers:${NC}\n\n"
 
   declare -a MENU_GROUPS=()
-  local_idx=1
+  menu_idx=1
   for entry in "${MENU_ENTRIES[@]}"; do
-    local_grp="${entry%%|*}"
-    local_label="${entry#*|}"
+    menu_grp="${entry%%|*}"
+    menu_label="${entry#*|}"
     detected_marker=""
     for d in "${DETECTED_GROUPS[@]}"; do
-      [[ $d == "$local_grp" ]] && detected_marker="  ${GREEN}← detected${NC}" && break
+      [[ $d == "$menu_grp" ]] && detected_marker="  ${GREEN}← detected${NC}" && break
     done
-    printf "  %d) %s%b\n" "$local_idx" "$local_label" "$detected_marker"
-    MENU_GROUPS+=("$local_grp")
-    (( local_idx++ ))
+    printf "  %d) %s%b\n" "$menu_idx" "$menu_label" "$detected_marker"
+    MENU_GROUPS+=("$menu_grp")
+    menu_idx=$(( menu_idx + 1 ))
   done
 
   echo
@@ -298,34 +382,42 @@ else
   echo
 
   while true; do
-    read -rp "Select driver(s) to install (e.g.  1 3 5,  or  a): " choices
+    read -rp "Select driver(s) to install (e.g.  1 3 5,  or  a): " choices || die "No input."
     [[ $choices == q ]] && { info "Aborted."; exit 0; }
     if [[ $choices == a ]]; then
       SELECTED_GROUPS=("${MENU_GROUPS[@]}")
       break
     fi
-    ok=true
+    SELECTED_GROUPS=()          # a rejected line must not leave earlier picks behind
+    valid=true
     for c in $choices; do
       if [[ $c =~ ^[0-9]+$ ]] && (( c >= 1 && c <= ${#MENU_GROUPS[@]} )); then
         SELECTED_GROUPS+=("${MENU_GROUPS[$((c-1))]}")
       else
-        warn "Invalid choice: '$c'"; ok=false; break
+        warn "Invalid choice: '$c'"; valid=false; break
       fi
     done
-    $ok && [[ ${#SELECTED_GROUPS[@]} -gt 0 ]] && break
+    $valid && [[ ${#SELECTED_GROUPS[@]} -gt 0 ]] && break
+    SELECTED_GROUPS=()
   done
 fi
 
 [[ ${#SELECTED_GROUPS[@]} -eq 0 ]] && { warn "Nothing selected — exiting."; exit 0; }
 
-install_prereqs
+heal_dpkg
+"${APT[@]}" update -qq
 
 declare -A _done=()
 for grp in "${SELECTED_GROUPS[@]}"; do
-  [[ -n ${_done[$grp]:-} ]] && continue
-  _done[$grp]=1
+  # rtl8812au and rtl8821au share one out-of-tree package — build it once
+  key=$grp
+  [[ $grp == rtl8821au ]] && ! have_module rtw88_8821au && key=rtl8812au-dkms
+  [[ $grp == rtl8812au ]] && ! have_module rtw88_8812au && key=rtl8812au-dkms
+  [[ -n ${_done[$key]:-} ]] && continue
+  _done[$key]=1
   do_install "$grp"
 done
 
 echo
-info "Done. A reboot is recommended to activate any new kernel modules."
+info "Done. Replug the adapter (or reboot) to load the driver, then re-run"
+info "install.sh if the access point interface (wlan0) was missing before."

@@ -33,22 +33,27 @@
         Clients
       </a>
     </nav>
+    <button class="update-btn" id="update-btn" type="button" hidden>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14"/></svg>
+      <span>Update<span class="hide-sm"> available</span></span>
+    </button>
+    <div class="sidebar-version" id="sidebar-version">{% if version and version.commit %}v{{ version.commit }}{% if version.date %} · {{ version.date[:10] }}{% endif %}{% endif %}</div>
     <div class="sidebar-footer">
-      <a href="/logout" class="nav-item logout">
+      <a href="/logout" class="nav-item logout" aria-label="Logout">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
         Logout
       </a>
-      <button class="reboot-btn" id="reboot-btn" title="Reboot gateway">
+      <button class="reboot-btn" id="reboot-btn" title="Reboot gateway" aria-label="Reboot gateway">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
       </button>
     </div>
 
     <!-- Reboot confirmation modal -->
     <div class="modal-backdrop" id="reboot-modal" style="display:none">
-      <div class="modal">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="reboot-title">
         <div class="modal-header">
-          <h2>Reboot gateway?</h2>
-          <button class="modal-close" id="close-reboot-modal">✕</button>
+          <h2 id="reboot-title">Reboot gateway?</h2>
+          <button class="modal-close" id="close-reboot-modal" aria-label="Close">✕</button>
         </div>
         <p style="color:var(--muted);font-size:13px;margin-bottom:20px">
           The gateway will be unavailable for ~30 seconds. All connected devices will lose internet access during the reboot.
@@ -56,6 +61,27 @@
         <div class="modal-footer">
           <button class="btn" id="cancel-reboot">Cancel</button>
           <button class="btn btn-danger" id="confirm-reboot">Reboot now</button>
+        </div>
+      </div>
+    </div>
+    <!-- Update modal -->
+    <div class="modal-backdrop" id="update-modal" style="display:none">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="update-title">
+        <div class="modal-header">
+          <h2 id="update-title">Update pi-nat64?</h2>
+          <button class="modal-close" id="close-update-modal" aria-label="Close">✕</button>
+        </div>
+        <div id="update-body">
+          <div class="update-summary" id="update-summary"></div>
+          <p style="color:var(--muted);font-size:13px;margin-bottom:20px">
+            Your passwords, Wi-Fi settings, port-forwards and blocked clients are kept.
+            The web UI restarts during the update (1–5 minutes); Wi-Fi clients may briefly lose connectivity.
+          </p>
+        </div>
+        <div id="update-msg" class="alert" style="display:none"></div>
+        <div class="modal-footer" id="update-footer">
+          <button class="btn" id="cancel-update">Cancel</button>
+          <button class="btn btn-primary" id="confirm-update">Update now</button>
         </div>
       </div>
     </div>
@@ -69,8 +95,8 @@
       <div class="page-header">
         <h1>Status</h1>
         <div class="status-indicator" id="overall-status">
-          <span class="dot dot-green"></span>
-          <span>All services online</span>
+          <span class="dot"></span>
+          <span>Checking…</span>
         </div>
       </div>
 
@@ -83,7 +109,7 @@
         <div class="stat-card">
           <div class="stat-label">DNS64 queries</div>
           <div class="stat-val" id="dns-count">—</div>
-          <div class="stat-sub">logged</div>
+          <div class="stat-sub">today (Pi-hole)</div>
         </div>
         <div class="stat-card">
           <div class="stat-label">AP clients</div>
@@ -176,7 +202,7 @@
         <div style="display:flex;gap:8px;margin-bottom:8px">
           <input type="text" id="adlist-url" placeholder="https://example.com/adlist.txt" style="flex:1"
                  data-enter-action="add-adlist">
-          <input type="text" id="adlist-comment" placeholder="Comment (optional)" style="width:180px">
+          <input type="text" id="adlist-comment" placeholder="Comment (optional)" style="width:180px" data-enter-action="add-adlist">
           <button class="btn btn-primary" data-action="add-adlist">Add</button>
         </div>
         <p id="adlist-msg" class="field-hint" style="min-height:1.2rem;margin-bottom:8px"></p>
@@ -265,7 +291,7 @@
         <div class="modal">
           <div class="modal-header">
             <h2>Add port forwarding rule</h2>
-            <button class="modal-close" id="close-add-rule">✕</button>
+            <button class="modal-close" id="close-add-rule" aria-label="Close">✕</button>
           </div>
           <div class="form-group">
             <label>Name</label>
@@ -312,17 +338,17 @@
       <div class="section-block">
         <h2>Access point</h2>
         <div class="form-group">
-          <label>SSID</label>
-          <input type="text" id="cfg-ssid" placeholder="pi-nat64">
+          <label for="cfg-ssid">SSID</label>
+          <input type="text" id="cfg-ssid" placeholder="pi-nat64" maxlength="32">
         </div>
         <div class="form-row">
           <div class="form-group">
-            <label>Channel</label>
-            <input type="number" id="cfg-channel" min="1" max="14" placeholder="6">
+            <label for="cfg-channel">Channel</label>
+            <input type="number" id="cfg-channel" min="1" max="13" placeholder="6">
           </div>
           <div class="form-group">
-            <label>WPA2 passphrase</label>
-            <input type="password" id="cfg-pass" placeholder="leave blank to keep current">
+            <label for="cfg-pass">WPA2 passphrase</label>
+            <input type="password" id="cfg-pass" placeholder="leave blank to keep current" autocomplete="new-password" maxlength="63">
           </div>
         </div>
       </div>
@@ -330,22 +356,29 @@
       <div class="section-block">
         <h2>NAT64 / DNS64</h2>
         <div class="form-group">
-          <label>Jool / DNS64 prefix</label>
+          <label for="cfg-jool">Jool / DNS64 prefix</label>
           <input type="text" id="cfg-jool" readonly>
           <span class="field-hint">Change requires editing configs manually and rebooting.</span>
         </div>
         <div class="form-group">
-          <label>Upstream DNS (IPv6)</label>
+          <label for="cfg-upstream-dns">Upstream DNS (IPv6)</label>
           <input type="text" id="cfg-upstream-dns" readonly>
         </div>
       </div>
 
       <div class="section-block">
         <h2>Admin password</h2>
-        <div class="form-group">
-          <label>New password</label>
-          <input type="password" id="cfg-new-pass" placeholder="Leave blank to keep current">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="cfg-cur-pass">Current password</label>
+            <input type="password" id="cfg-cur-pass" placeholder="Required to change it" autocomplete="current-password">
+          </div>
+          <div class="form-group">
+            <label for="cfg-new-pass">New password</label>
+            <input type="password" id="cfg-new-pass" placeholder="Leave blank to keep current" autocomplete="new-password">
+          </div>
         </div>
+        <span class="field-hint">Changing it signs out every other session.</span>
       </div>
 
       <div id="settings-msg" class="alert" style="display:none"></div>

@@ -1,49 +1,108 @@
 /* pi-nat64 — frontend JS */
 
-// ── CSRF token ────────────────────────────────────────────────────────────────
+// ── API helper ────────────────────────────────────────────────────────────────
+// Every request goes through api(): it adds the CSRF header, sends JSON, and
+// turns anything that isn't a 2xx JSON response into a thrown Error with the
+// server's message. An expired session (401, or a redirect to /login) sends the
+// browser to the login page instead of silently "succeeding" on the login HTML.
 function getCsrfToken() {
   return document.querySelector('meta[name="csrf-token"]')?.content || '';
 }
 
-function csrfHeaders(extra) {
-  return Object.assign({ 'X-CSRF-Token': getCsrfToken() }, extra);
+async function api(url, { method = 'GET', body, timeout } = {}) {
+  const opts = { method, headers: {} };
+  if (method !== 'GET') opts.headers['X-CSRF-Token'] = getCsrfToken();
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  if (timeout) opts.signal = AbortSignal.timeout(timeout);
+
+  const res = await fetch(url, opts);
+  if (res.status === 401 || res.redirected) {
+    location.href = '/login';
+    throw new Error('Session expired — please log in again.');
+  }
+  let data = null;
+  try { data = await res.json(); } catch (_) { /* non-JSON body */ }
+  if (!res.ok) throw new Error((data && data.error) || `Request failed (HTTP ${res.status})`);
+  if (data === null) throw new Error('Unexpected response from the server.');
+  return data;
+}
+
+function flash(el, text, kind, ms = 4000) {
+  if (!el) return;
+  el.style.color = kind === 'error' ? 'var(--danger)'
+                 : kind === 'muted' ? 'var(--muted)' : 'var(--accent)';
+  el.textContent = text;
+  clearTimeout(el._flashTimer);
+  if (ms) el._flashTimer = setTimeout(() => { el.textContent = ''; }, ms);
+}
+
+// Run fn with the button disabled, so double-clicks can't fire a request twice
+// (e.g. two identical ip6tables DNAT rules for one port-forward).
+async function withBusy(btn, fn) {
+  if (btn && btn.disabled) return;
+  if (btn) btn.disabled = true;
+  try { await fn(); }
+  finally { if (btn && btn.isConnected) btn.disabled = false; }
 }
 
 // ── Event delegation ───────────────────────────────────────────────────────────
 // The CSP (script-src 'self', no 'unsafe-inline') blocks inline on* handlers, so
 // all click/Enter actions are wired here via data-action / data-enter-action.
+const ACTIONS = {
+  'update-gravity':   ()   => updateGravity(),
+  'add-adlist':       ()   => addAdlist(),
+  'toggle-adlist':    (ds) => toggleAdlist(Number(ds.id)),
+  'delete-adlist':    (ds) => deleteAdlist(Number(ds.id)),
+  'add-whitelist':    ()   => addToWhitelist(),
+  'remove-whitelist': (ds) => removeFromWhitelist(ds.domain),
+  'refresh-clients':  ()   => loadClients(),
+  'block-client':     (ds) => setClientBlocked(ds.mac, true),
+  'unblock-client':   (ds) => setClientBlocked(ds.mac, false),
+  'toggle-rule':      (ds) => toggleRule(Number(ds.id)),
+  'delete-rule':      (ds) => deleteRule(Number(ds.id)),
+};
+
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-action]');
-  if (!el) return;
-  const { action, id, mac, domain } = el.dataset;
-  switch (action) {
-    case 'update-gravity':   updateGravity(); break;
-    case 'add-adlist':       addAdlist(); break;
-    case 'toggle-adlist':    toggleAdlist(Number(id)); break;
-    case 'delete-adlist':    deleteAdlist(Number(id)); break;
-    case 'add-whitelist':    addToWhitelist(); break;
-    case 'remove-whitelist': removeFromWhitelist(domain); break;
-    case 'refresh-clients':  loadClients(); break;
-    case 'block-client':     blockClient(mac); break;
-    case 'unblock-client':   unblockClient(mac); break;
-    case 'toggle-rule':      toggleRule(Number(id)); break;
-    case 'delete-rule':      deleteRule(Number(id)); break;
-  }
+  if (!el || !ACTIONS[el.dataset.action]) return;
+  // update-gravity manages its own (longer) busy state
+  if (el.dataset.action === 'update-gravity') { ACTIONS['update-gravity'](); return; }
+  withBusy(el, () => ACTIONS[el.dataset.action](el.dataset));
 });
 
 document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeModals(); return; }
   if (e.key !== 'Enter') return;
   const el = e.target.closest('[data-enter-action]');
-  if (!el) return;
-  if (el.dataset.enterAction === 'add-adlist')    addAdlist();
-  if (el.dataset.enterAction === 'add-whitelist') addToWhitelist();
+  if (!el || !ACTIONS[el.dataset.enterAction]) return;
+  e.preventDefault();
+  ACTIONS[el.dataset.enterAction](el.dataset);
+});
+
+function closeModals() {
+  const reboot = document.getElementById('reboot-modal');
+  if (reboot && !reboot.dataset.rebooting) reboot.style.display = 'none';
+  const upd = document.getElementById('update-modal');
+  if (upd && !upd.dataset.updating) upd.style.display = 'none';
+  if (document.getElementById('add-rule-modal')?.style.display === 'flex') closeAddModal();
+}
+
+// Clicking the dimmed backdrop (not the dialog itself) closes a modal
+document.querySelectorAll('.modal-backdrop').forEach(bd => {
+  bd.addEventListener('click', e => { if (e.target === bd) closeModals(); });
 });
 
 // ── Tab navigation ──────────────────────────────────────────────────────────
+let activeTab = 'status';
+
 document.querySelectorAll('.nav-item[data-tab]').forEach(link => {
   link.addEventListener('click', e => {
     e.preventDefault();
     const tab = link.dataset.tab;
+    activeTab = tab;
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     link.classList.add('active');
@@ -53,14 +112,21 @@ document.querySelectorAll('.nav-item[data-tab]').forEach(link => {
     if (tab === 'settings') loadSettings();
     if (tab === 'blocking') loadBlocking();
     if (tab === 'clients')  loadClients();
+    syncPolling();
   });
 });
 
 // ── Status ───────────────────────────────────────────────────────────────────
+function setOverall(dotClass, text) {
+  const st = document.getElementById('overall-status');
+  if (!st) return;
+  st.innerHTML = `<span class="dot ${dotClass}"></span><span></span>`;
+  st.lastElementChild.textContent = text;
+}
+
 async function loadStatus() {
   try {
-    const res = await fetch('/api/status');
-    const d = await res.json();
+    const d = await api('/api/status', { timeout: 8000 });
 
     setText('nat64-count', d.nat64_sessions);
     setText('dns-count',   d.dns_queries);
@@ -72,13 +138,9 @@ async function loadStatus() {
     setDot('svc-pihole',  d.pihole_running);
 
     const all = d.jool_running && d.unbound_running && d.hostapd_running && d.pihole_running;
-    const st = document.getElementById('overall-status');
-    if (st) {
-      st.innerHTML = all
-        ? '<span class="dot dot-green"></span><span>All services online</span>'
-        : '<span class="dot dot-yellow"></span><span>Some services offline</span>';
-    }
+    setOverall(all ? 'dot-green' : 'dot-yellow', all ? 'All services online' : 'Some services offline');
   } catch (err) {
+    setOverall('dot-red', 'Status unavailable');
     console.error('Status fetch failed', err);
   }
 }
@@ -94,11 +156,31 @@ function setDot(id, active) {
   el.className = 'dot ' + (active ? 'dot-green' : 'dot-red');
 }
 
+// Poll only while the Status tab is showing and the browser tab is visible.
+// An endless background poll wastes the Pi's CPU (each poll runs several
+// systemctl/jool/iw calls) and keeps an idle session alive forever.
+let statusTimer = null;
+function syncPolling() {
+  const want = activeTab === 'status' && document.visibilityState === 'visible';
+  if (want && !statusTimer) {
+    statusTimer = setInterval(loadStatus, 10000);
+  } else if (!want && statusTimer) {
+    clearInterval(statusTimer);
+    statusTimer = null;
+  }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && activeTab === 'status') loadStatus();
+  syncPolling();
+});
+
 // ── Port forwarding ───────────────────────────────────────────────────────────
 async function loadRules() {
-  const res = await fetch('/api/rules');
-  const rules = await res.json();
-  renderRules(rules);
+  try {
+    renderRules(await api('/api/rules'));
+  } catch (err) {
+    alert('Failed to load rules: ' + err.message);
+  }
 }
 
 function renderRules(rules) {
@@ -118,7 +200,7 @@ function renderRules(rules) {
   tbody.innerHTML = rules.map(r => `
     <tr data-id="${r.id}">
       <td>${escHtml(r.name)}</td>
-      <td><span class="pill pill-${r.proto.toLowerCase()}">${r.proto}</span></td>
+      <td><span class="pill pill-${escHtml(r.proto.toLowerCase())}">${escHtml(r.proto)}</span></td>
       <td>${r.ext_port}</td>
       <td><code>${escHtml(r.dest_ip)}</code></td>
       <td>${r.dest_port}</td>
@@ -134,19 +216,28 @@ function renderRules(rules) {
 }
 
 async function toggleRule(id) {
-  await fetch(`/api/rules/${id}/toggle`, { method: 'POST', headers: csrfHeaders() });
+  try {
+    await api(`/api/rules/${id}/toggle`, { method: 'POST' });
+  } catch (err) {
+    alert(err.message);
+  }
   loadRules();
 }
 
 async function deleteRule(id) {
   if (!confirm('Delete this rule?')) return;
-  await fetch(`/api/rules/${id}`, { method: 'DELETE', headers: csrfHeaders() });
+  try {
+    await api(`/api/rules/${id}`, { method: 'DELETE' });
+  } catch (err) {
+    alert(err.message);
+  }
   loadRules();
 }
 
 // Add-rule modal
 document.getElementById('open-add-rule')?.addEventListener('click', () => {
   document.getElementById('add-rule-modal').style.display = 'flex';
+  document.getElementById('rule-name')?.focus();
 });
 
 ['close-add-rule', 'cancel-add-rule'].forEach(id => {
@@ -156,9 +247,10 @@ document.getElementById('open-add-rule')?.addEventListener('click', () => {
 function closeAddModal() {
   document.getElementById('add-rule-modal').style.display = 'none';
   document.getElementById('rule-error').style.display = 'none';
+  ['rule-name', 'rule-ext-port', 'rule-dest-ip', 'rule-dest-port'].forEach(id => setVal(id, ''));
 }
 
-document.getElementById('save-rule')?.addEventListener('click', async () => {
+document.getElementById('save-rule')?.addEventListener('click', e => withBusy(e.currentTarget, async () => {
   const body = {
     name:      document.getElementById('rule-name').value.trim(),
     proto:     document.getElementById('rule-proto').value,
@@ -168,37 +260,33 @@ document.getElementById('save-rule')?.addEventListener('click', async () => {
   };
 
   const errEl = document.getElementById('rule-error');
+  const showErr = text => { errEl.textContent = text; errEl.style.display = 'block'; };
 
   if (!body.name || !body.dest_ip || !body.ext_port || !body.dest_port) {
-    errEl.textContent = 'All fields are required.';
-    errEl.style.display = 'block';
+    showErr('All fields are required.');
     return;
   }
 
-  const res = await fetch('/api/rules', {
-    method: 'POST',
-    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(body),
-  });
-
-  if (res.ok) {
+  try {
+    await api('/api/rules', { method: 'POST', body });
     closeAddModal();
     loadRules();
-  } else {
-    const d = await res.json();
-    errEl.textContent = d.error || 'Failed to save rule.';
-    errEl.style.display = 'block';
+  } catch (err) {
+    showErr(err.message);
   }
-});
+}));
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 async function loadSettings() {
-  const res = await fetch('/api/settings');
-  const d = await res.json();
-  setVal('cfg-ssid',        d.ssid);
-  setVal('cfg-channel',     d.channel);
-  setVal('cfg-jool',        d.jool_prefix);
-  setVal('cfg-upstream-dns',d.upstream_dns);
+  try {
+    const d = await api('/api/settings');
+    setVal('cfg-ssid',         d.ssid);
+    setVal('cfg-channel',      d.channel);
+    setVal('cfg-jool',         d.jool_prefix);
+    setVal('cfg-upstream-dns', d.upstream_dns);
+  } catch (err) {
+    alert('Failed to load settings: ' + err.message);
+  }
 }
 
 function setVal(id, val) {
@@ -206,72 +294,88 @@ function setVal(id, val) {
   if (el) el.value = val ?? '';
 }
 
-document.getElementById('save-settings')?.addEventListener('click', async () => {
+document.getElementById('save-settings')?.addEventListener('click', e => withBusy(e.currentTarget, async () => {
   const body = {
     ssid:           document.getElementById('cfg-ssid').value.trim(),
     channel:        document.getElementById('cfg-channel').value,
     wpa_passphrase: document.getElementById('cfg-pass').value,
-    new_password:   document.getElementById('cfg-new-pass').value,
+    new_password:     document.getElementById('cfg-new-pass').value,
+    current_password: document.getElementById('cfg-cur-pass').value,
   };
 
   const msgEl = document.getElementById('settings-msg');
-  const res = await fetch('/api/settings', {
-    method: 'POST',
-    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(body),
-  });
+  const show = (ok, text) => {
+    msgEl.style.display = 'block';
+    msgEl.className = 'alert ' + (ok ? 'alert-success' : 'alert-error');
+    msgEl.textContent = text;
+    clearTimeout(msgEl._t);
+    msgEl._t = setTimeout(() => { msgEl.style.display = 'none'; }, 6000);
+  };
 
-  msgEl.style.display = 'block';
-  if (res.ok) {
-    msgEl.className = 'alert alert-success';
-    msgEl.textContent = 'Settings saved. hostapd restarted.';
-  } else {
-    const d = await res.json();
-    msgEl.className = 'alert alert-error';
-    msgEl.textContent = d.error || 'Failed to save settings.';
+  // Mirror the server's rules so nothing is half-applied by a rejected field
+  if (body.wpa_passphrase && (body.wpa_passphrase.length < 8 || body.wpa_passphrase.length > 63)) {
+    show(false, 'Wi-Fi passphrase must be 8–63 characters.');
+    return;
   }
-  setTimeout(() => { msgEl.style.display = 'none'; }, 4000);
-});
+  if (body.new_password && body.new_password.length < 8) {
+    show(false, 'Admin password must be at least 8 characters.');
+    return;
+  }
+  if (body.new_password && !body.current_password) {
+    show(false, 'Enter your current admin password to change it.');
+    return;
+  }
+
+  try {
+    const d = await api('/api/settings', { method: 'POST', body });
+    ['cfg-pass', 'cfg-new-pass', 'cfg-cur-pass'].forEach(id => setVal(id, ''));
+    show(true, d.ap_restarted
+      ? 'Settings saved. The Wi-Fi access point restarted — reconnect if you were on it.'
+      : 'Settings saved.');
+  } catch (err) {
+    // Restarting hostapd drops clients on the gateway's own Wi-Fi mid-request
+    show(false, err instanceof TypeError
+      ? 'Connection lost while the Wi-Fi restarted — reconnect and reload to check the settings.'
+      : err.message);
+  }
+}));
 
 // ── Blocking (Pi-hole) ────────────────────────────────────────────────────────
 async function loadBlocking() {
   try {
-    const res = await fetch('/api/pihole/stats');
-    const d = await res.json();
+    const d = await api('/api/pihole/stats');
 
     setText('ph-queries', d.queries_today.toLocaleString());
-    setText('ph-blocked',  d.blocked_today.toLocaleString());
-    setText('ph-pct',      d.block_pct.toFixed(1));
-    setText('ph-gravity',  d.domains_blocked.toLocaleString());
+    setText('ph-blocked', d.blocked_today.toLocaleString());
+    setText('ph-pct',     d.block_pct.toFixed(1));
+    setText('ph-gravity', d.domains_blocked.toLocaleString());
 
     const dot  = document.getElementById('ph-status-dot');
     const text = document.getElementById('ph-status-text');
-    if (dot && text) {
-      const on = d.status === 'enabled';
-      dot.className = 'dot ' + (on ? 'dot-green' : 'dot-red');
-      text.textContent = on ? 'Blocking enabled' : 'Blocking disabled';
-    }
-
-    const btn = document.getElementById('pihole-toggle-btn');
-    if (btn) btn.textContent = d.status === 'enabled' ? 'Disable blocking' : 'Enable blocking';
+    const btn  = document.getElementById('pihole-toggle-btn');
+    const state = {
+      enabled:  ['dot-green',  'Blocking enabled',        'Disable blocking'],
+      disabled: ['dot-red',    'Blocking disabled',       'Enable blocking'],
+    }[d.status] || ['dot-yellow', 'Blocking status unknown', 'Enable blocking'];
+    if (dot)  dot.className = 'dot ' + state[0];
+    if (text) text.textContent = state[1];
+    if (btn)  btn.textContent = state[2];
   } catch (err) {
     console.error('Pi-hole stats fetch failed', err);
   }
 
   try {
-    const res = await fetch('/api/pihole/top-blocked');
-    const items = await res.json();
+    const items = await api('/api/pihole/top-blocked');
     const list = document.getElementById('ph-top-list');
-    if (!list) return;
-    if (!items.length) {
-      list.innerHTML = '<p class="field-hint">No blocked domains yet.</p>';
-      return;
+    if (list) {
+      list.innerHTML = items.length
+        ? items.map(i => `
+          <div class="service-row">
+            <span class="svc-name">${escHtml(i.domain)}</span>
+            <span class="svc-desc">${Number(i.count).toLocaleString()} blocked</span>
+          </div>`).join('')
+        : '<p class="field-hint">No blocked domains yet.</p>';
     }
-    list.innerHTML = items.map(i => `
-      <div class="service-row">
-        <span class="svc-name">${escHtml(i.domain)}</span>
-        <span class="svc-desc">${i.count.toLocaleString()} blocked</span>
-      </div>`).join('');
   } catch (err) {
     console.error('Pi-hole top-blocked fetch failed', err);
   }
@@ -285,8 +389,7 @@ async function loadAdlists() {
   const container = document.getElementById('adlist-list');
   if (!container) return;
   try {
-    const res   = await fetch('/api/pihole/adlists');
-    const lists = await res.json();
+    const lists = await api('/api/pihole/adlists');
 
     if (!lists.length) {
       container.innerHTML = '<p class="field-hint">No adlists configured yet.</p>';
@@ -309,12 +412,12 @@ async function loadAdlists() {
           <tr data-id="${l.id}">
             <td style="font-size:11px;word-break:break-all" title="${escHtml(l.url)}">${escHtml(truncate(l.url, 60))}</td>
             <td style="font-size:12px;color:var(--muted)">${escHtml(l.comment || '—')}</td>
-            <td style="text-align:right;font-size:12px">${l.domains ? l.domains.toLocaleString() : '—'}</td>
+            <td style="text-align:right;font-size:12px">${l.domains ? Number(l.domains).toLocaleString() : '—'}</td>
             <td><span class="pill ${l.enabled ? 'pill-on' : 'pill-off'}">${l.enabled ? 'enabled' : 'disabled'}</span></td>
             <td>
               <div class="action-row">
                 <button class="btn btn-sm" data-action="toggle-adlist" data-id="${l.id}">${l.enabled ? 'Disable' : 'Enable'}</button>
-                <button class="btn btn-sm btn-danger" data-action="delete-adlist" data-id="${l.id}">✕</button>
+                <button class="btn btn-sm btn-danger" data-action="delete-adlist" data-id="${l.id}" aria-label="Delete adlist">✕</button>
               </div>
             </td>
           </tr>`).join('')}
@@ -331,64 +434,61 @@ async function addAdlist() {
   const msg     = document.getElementById('adlist-msg');
   if (!url) return;
 
-  const res = await fetch('/api/pihole/adlists', {
-    method: 'POST',
-    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ url, comment }),
-  });
-  const d = await res.json();
-
-  if (res.ok) {
-    document.getElementById('adlist-url').value     = '';
-    document.getElementById('adlist-comment').value = '';
-    msg.style.color   = 'var(--accent)';
-    msg.textContent   = 'Adlist added. Run "Update gravity" to activate it.';
+  try {
+    await api('/api/pihole/adlists', { method: 'POST', body: { url, comment } });
+    setVal('adlist-url', '');
+    setVal('adlist-comment', '');
+    flash(msg, 'Adlist added. Run "Update gravity" to activate it.', 'ok', 5000);
     loadAdlists();
-  } else {
-    msg.style.color = 'var(--danger)';
-    msg.textContent = d.error || 'Failed to add adlist.';
+  } catch (err) {
+    flash(msg, err.message, 'error', 5000);
   }
-  setTimeout(() => { msg.textContent = ''; }, 5000);
 }
 
 async function deleteAdlist(id) {
+  if (!confirm('Remove this adlist?')) return;
   const msg = document.getElementById('adlist-msg');
-  const res = await fetch('/api/pihole/adlists', {
-    method: 'DELETE',
-    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ id }),
-  });
-  if (res.ok) {
-    msg.style.color = 'var(--accent)';
-    msg.textContent = 'Adlist removed. Run "Update gravity" to apply.';
-    setTimeout(() => { msg.textContent = ''; }, 5000);
+  try {
+    await api('/api/pihole/adlists', { method: 'DELETE', body: { id } });
+    flash(msg, 'Adlist removed. Run "Update gravity" to apply.', 'ok', 5000);
     loadAdlists();
+  } catch (err) {
+    flash(msg, err.message, 'error', 5000);
   }
 }
 
 async function toggleAdlist(id) {
-  const res = await fetch('/api/pihole/adlists/toggle', {
-    method: 'POST',
-    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ id }),
-  });
-  if (res.ok) loadAdlists();
+  try {
+    await api('/api/pihole/adlists/toggle', { method: 'POST', body: { id } });
+    loadAdlists();
+  } catch (err) {
+    flash(document.getElementById('adlist-msg'), err.message, 'error', 5000);
+  }
 }
+
+const GRAVITY_LABEL = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg> Update gravity';
 
 async function updateGravity() {
   const btn = document.getElementById('gravity-btn');
   const msg = document.getElementById('adlist-msg');
+  if (btn.disabled) return;
   btn.disabled    = true;
   btn.textContent = 'Updating…';
-  msg.style.color = 'var(--muted)';
-  msg.textContent = 'Gravity update started — this may take a few minutes.';
 
-  await fetch('/api/pihole/gravity', { method: 'POST', headers: csrfHeaders() });
+  try {
+    await api('/api/pihole/gravity', { method: 'POST' });
+  } catch (err) {
+    flash(msg, err.message, 'error', 5000);
+    btn.disabled  = false;
+    btn.innerHTML = GRAVITY_LABEL;
+    return;
+  }
 
+  flash(msg, 'Gravity update started — this may take a few minutes.', 'muted', 0);
   // Re-enable after 60 s (enough time for gravity to finish on most systems)
   setTimeout(() => {
-    btn.disabled    = false;
-    btn.innerHTML   = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg> Update gravity';
+    btn.disabled  = false;
+    btn.innerHTML = GRAVITY_LABEL;
     msg.textContent = '';
     loadAdlists();   // refresh domain counts
   }, 60000);
@@ -403,80 +503,56 @@ async function loadWhitelist() {
   const list = document.getElementById('wl-list');
   if (!list) return;
   try {
-    const res = await fetch('/api/pihole/whitelist');
-    const domains = await res.json();
-    if (!domains.length) {
-      list.innerHTML = '<p class="field-hint">No domains whitelisted yet.</p>';
-      return;
-    }
-    list.innerHTML = domains.map(d => `
-      <div class="service-row">
-        <span class="svc-name" style="flex:1">${escHtml(d)}</span>
-        <button class="btn btn-sm btn-danger" data-action="remove-whitelist" data-domain="${escHtml(d)}">Remove</button>
-      </div>`).join('');
+    const domains = await api('/api/pihole/whitelist');
+    list.innerHTML = domains.length
+      ? domains.map(d => `
+        <div class="service-row">
+          <span class="svc-name" style="flex:1">${escHtml(d)}</span>
+          <button class="btn btn-sm btn-danger" data-action="remove-whitelist" data-domain="${escHtml(d)}">Remove</button>
+        </div>`).join('')
+      : '<p class="field-hint">No domains whitelisted yet.</p>';
   } catch (err) {
     list.innerHTML = '<p class="field-hint">Failed to load whitelist.</p>';
   }
 }
 
 async function addToWhitelist() {
-  const input = document.getElementById('wl-input');
-  const msg   = document.getElementById('wl-msg');
+  const input  = document.getElementById('wl-input');
+  const msg    = document.getElementById('wl-msg');
   const domain = input.value.trim().toLowerCase();
   if (!domain) return;
 
-  const res = await fetch('/api/pihole/whitelist', {
-    method: 'POST',
-    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ domain }),
-  });
-  const d = await res.json();
-
-  if (res.ok) {
+  try {
+    await api('/api/pihole/whitelist', { method: 'POST', body: { domain } });
     input.value = '';
-    msg.style.color = 'var(--accent)';
-    msg.textContent = `${domain} added to whitelist.`;
+    flash(msg, `${domain} added to whitelist.`, 'ok');
     loadWhitelist();
-  } else {
-    msg.style.color = 'var(--danger)';
-    msg.textContent = d.error || 'Failed to add domain.';
+  } catch (err) {
+    flash(msg, err.message, 'error');
   }
-  setTimeout(() => { msg.textContent = ''; }, 4000);
 }
 
 async function removeFromWhitelist(domain) {
   const msg = document.getElementById('wl-msg');
-  const res = await fetch('/api/pihole/whitelist', {
-    method: 'DELETE',
-    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ domain }),
-  });
-  const d = await res.json();
-
-  if (res.ok) {
-    msg.style.color = 'var(--accent)';
-    msg.textContent = `${domain} removed from whitelist.`;
+  try {
+    await api('/api/pihole/whitelist', { method: 'DELETE', body: { domain } });
+    flash(msg, `${domain} removed from whitelist.`, 'ok');
     loadWhitelist();
-  } else {
-    msg.style.color = 'var(--danger)';
-    msg.textContent = d.error || 'Failed to remove domain.';
+  } catch (err) {
+    flash(msg, err.message, 'error');
   }
-  setTimeout(() => { msg.textContent = ''; }, 4000);
 }
 
-document.getElementById('pihole-toggle-btn')?.addEventListener('click', async () => {
+document.getElementById('pihole-toggle-btn')?.addEventListener('click', e => withBusy(e.currentTarget, async () => {
   const msg = document.getElementById('pihole-toggle-msg');
   try {
-    const res = await fetch('/api/pihole/toggle', { method: 'POST', headers: csrfHeaders() });
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || 'Failed');
-    if (msg) msg.textContent = d.status === 'enabled' ? 'Blocking enabled.' : 'Blocking disabled.';
+    const d = await api('/api/pihole/toggle', { method: 'POST' });
+    flash(msg, d.status === 'enabled' ? 'Blocking enabled.' : 'Blocking disabled.', 'ok');
     loadBlocking();
   } catch (err) {
-    if (msg) msg.textContent = String(err);
+    flash(msg, err.message, 'error');
   }
-  setTimeout(() => { if (msg) msg.textContent = ''; }, 4000);
-});
+}));
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function escHtml(s) {
@@ -486,8 +562,7 @@ function escHtml(s) {
 // ── Clients ───────────────────────────────────────────────────────────────────
 async function loadClients() {
   try {
-    const res     = await fetch('/api/clients');
-    const clients = await res.json();
+    const clients = await api('/api/clients');
     const tbody   = document.getElementById('clients-body');
     const empty   = document.getElementById('clients-empty');
     const wrap    = document.getElementById('clients-table-wrap');
@@ -534,36 +609,20 @@ async function loadClients() {
   }
 }
 
-async function blockClient(mac) {
-  const res = await fetch('/api/clients/block', {
-    method: 'POST',
-    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ mac }),
-  });
-  if (res.ok) loadClients();
-  else {
-    const d = await res.json();
-    alert(d.error || 'Failed to block client.');
-  }
-}
-
-async function unblockClient(mac) {
-  const res = await fetch('/api/clients/unblock', {
-    method: 'POST',
-    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ mac }),
-  });
-  if (res.ok) loadClients();
-  else {
-    const d = await res.json();
-    alert(d.error || 'Failed to unblock client.');
+async function setClientBlocked(mac, block) {
+  try {
+    await api(block ? '/api/clients/block' : '/api/clients/unblock', { method: 'POST', body: { mac } });
+    loadClients();
+  } catch (err) {
+    alert(err.message);
   }
 }
 
 function fmtSignal(dbm) {
   if (dbm == null) return '—';
-  const cls = dbm >= -60 ? 'signal-good' : dbm >= -70 ? 'signal-ok' : 'signal-weak';
-  return `<span class="${cls}">${dbm} dBm</span>`;
+  const n = Number(dbm);
+  const cls = n >= -60 ? 'signal-good' : n >= -70 ? 'signal-ok' : 'signal-weak';
+  return `<span class="${cls}">${n} dBm</span>`;
 }
 
 function fmtBytes(b) {
@@ -595,32 +654,145 @@ document.getElementById('reboot-btn')?.addEventListener('click', () => {
 });
 
 document.getElementById('confirm-reboot')?.addEventListener('click', async () => {
-  const btn = document.getElementById('confirm-reboot');
+  const btn    = document.getElementById('confirm-reboot');
+  const cancel = document.getElementById('cancel-reboot');
+  const modal  = document.getElementById('reboot-modal');
   btn.textContent = 'Rebooting…';
-  btn.disabled = true;
-  document.getElementById('cancel-reboot').disabled = true;
+  btn.disabled = cancel.disabled = true;
 
   try {
-    await fetch('/api/reboot', { method: 'POST', headers: csrfHeaders() });
-  } catch (_) { /* connection drop is expected */ }
+    await api('/api/reboot', { method: 'POST', timeout: 5000 });
+  } catch (err) {
+    // A dropped connection is expected (the Pi is going down); a real error
+    // response (403, 500, expired session) means the reboot did NOT happen.
+    if (!(err instanceof TypeError) && err.name !== 'TimeoutError') {
+      btn.textContent = 'Reboot';
+      btn.disabled = cancel.disabled = false;
+      alert('Reboot failed: ' + err.message);
+      return;
+    }
+  }
 
-  document.getElementById('reboot-modal').innerHTML = `
-    <div class="modal" style="text-align:center">
+  modal.dataset.rebooting = '1';
+  modal.innerHTML = `
+    <div class="modal" style="text-align:center" role="dialog" aria-modal="true">
       <p style="font-size:15px;font-weight:600;margin-bottom:10px">Rebooting…</p>
       <p class="field-hint">The page will reload automatically when the gateway comes back online.</p>
     </div>`;
 
-  // Wait 20 s for shutdown, then poll until /api/status responds again
-  setTimeout(() => {
-    const poll = setInterval(async () => {
-      try {
-        const res = await fetch('/api/status');
-        if (res.ok) { clearInterval(poll); location.reload(); }
-      } catch (_) {}
-    }, 3000);
-  }, 20000);
+  // Wait 20 s for shutdown, then poll until the UI answers again. Each probe
+  // has a timeout and the next one starts only after it settles, so requests
+  // can't pile up while the Pi is offline.
+  const probe = async () => {
+    try {
+      const res = await fetch('/login', { signal: AbortSignal.timeout(2500) });
+      if (res.ok) { location.reload(); return; }
+    } catch (_) { /* still down */ }
+    setTimeout(probe, 3000);
+  };
+  setTimeout(probe, 20000);
+});
+
+// ── Software update ──────────────────────────────────────────────────────────
+// The Update button stays hidden unless the gateway's git checkout is behind
+// its upstream branch. Applying runs update.sh on the Pi; the UI restarts
+// midway, so progress is polled until the new version answers.
+async function checkForUpdate() {
+  try {
+    const d = await api('/api/update/check');
+    const btn = document.getElementById('update-btn');
+    if (!btn || !d.available) return;
+    btn.hidden = false;
+    btn.title = `${d.behind} new change${d.behind === 1 ? '' : 's'} — latest: ${d.summary || d.latest}`;
+    const sum = document.getElementById('update-summary');
+    sum.textContent = '';
+    const lines = [
+      `${d.behind} new change${d.behind === 1 ? '' : 's'} available` +
+        (d.current && d.current.commit ? ` (installed: ${d.current.commit}, latest: ${d.latest}).` : '.'),
+      d.summary ? `Latest: “${d.summary}”${d.date ? ` (${d.date})` : ''}` : '',
+    ];
+    lines.filter(Boolean).forEach(t => {
+      const p = document.createElement('p');
+      p.textContent = t;
+      sum.appendChild(p);
+    });
+  } catch (err) {
+    console.warn('Update check failed', err);
+  }
+}
+
+document.getElementById('update-btn')?.addEventListener('click', () => {
+  document.getElementById('update-modal').style.display = 'flex';
+});
+['close-update-modal', 'cancel-update'].forEach(id => {
+  document.getElementById(id)?.addEventListener('click', () => {
+    const m = document.getElementById('update-modal');
+    if (!m.dataset.updating) m.style.display = 'none';
+  });
+});
+
+function updateMsg(kind, text) {
+  const el = document.getElementById('update-msg');
+  el.style.display = 'block';
+  el.className = 'alert ' + (kind === 'error' ? 'alert-error' : kind === 'ok' ? 'alert-success' : '');
+  el.textContent = text;
+}
+
+document.getElementById('confirm-update')?.addEventListener('click', async () => {
+  const modal   = document.getElementById('update-modal');
+  const goBtn   = document.getElementById('confirm-update');
+  const cancel  = document.getElementById('cancel-update');
+  goBtn.disabled = cancel.disabled = true;
+  goBtn.textContent = 'Updating…';
+
+  try {
+    await api('/api/update/apply', { method: 'POST' });
+  } catch (err) {
+    updateMsg('error', 'Could not start the update: ' + err.message);
+    goBtn.disabled = cancel.disabled = false;
+    goBtn.textContent = 'Update now';
+    return;
+  }
+
+  modal.dataset.updating = '1';
+  updateMsg('info', 'Updating — this can take a few minutes. Keep this page open.');
+
+  const started = Date.now();
+  let sawRunning = false;
+  const poll = async () => {
+    let state = null;
+    try {
+      state = (await api('/api/update/status', { timeout: 4000 })).state;
+    } catch (_) { /* UI restarting mid-update — keep polling */ }
+
+    if (state === 'running') sawRunning = true;
+    if (state === 'success' && (sawRunning || Date.now() - started > 5000)) {
+      updateMsg('ok', 'Update installed — reloading…');
+      setTimeout(() => location.reload(), 1500);
+      return;
+    }
+    if (state === 'failed') {
+      delete modal.dataset.updating;
+      updateMsg('error', 'The update failed; the previous version is still running. ' +
+                         'Details on the gateway: /var/log/pi-nat64-update.log');
+      goBtn.textContent = 'Update now';
+      goBtn.disabled = cancel.disabled = false;
+      return;
+    }
+    if (Date.now() - started > 30 * 60 * 1000) {
+      delete modal.dataset.updating;
+      updateMsg('error', 'The update is taking unusually long. Check /var/log/pi-nat64-update.log on the gateway.');
+      return;
+    }
+    setTimeout(poll, 3000);
+  };
+  setTimeout(poll, 3000);
 });
 
 // ── Init ─────────────────────────────────────────────────────────────────────
-loadStatus();
-setInterval(loadStatus, 10000);
+// app.js is also loaded on the login page — only start the dashboard there.
+if (document.getElementById('tab-status')) {
+  loadStatus();
+  syncPolling();
+  checkForUpdate();
+}
