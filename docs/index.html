@@ -24,6 +24,8 @@ a{color:inherit;text-decoration:none;}
 .nav-item:hover{background:var(--bg3);color:var(--text);}
 .nav-item.active{background:var(--bg3);color:var(--accent);}
 .nav-item svg{flex-shrink:0;}
+.demo-note{display:block;margin:8px 12px 0;padding:8px 10px;border:1px dashed var(--border);border-radius:8px;font-size:11px;line-height:1.5;color:var(--muted);}
+.demo-note:hover{color:var(--accent);border-color:var(--accent);}
 .sidebar-footer{padding:8px;border-top:1px solid var(--border);display:flex;align-items:center;gap:2px;}
 .logout{color:var(--muted);flex:1;}
 .logout:hover{color:var(--danger);}
@@ -145,25 +147,26 @@ input[readonly]{opacity:.6;cursor:default;}
     <svg width="24" height="24" viewBox="0 0 32 32" fill="none"><rect width="32" height="32" rx="8" fill="#1a1a2e"/><path d="M8 16 L16 8 L24 16 L20 16 L20 24 L12 24 L12 16 Z" fill="#4ade80" opacity=".9"/></svg>
     <span>pi-nat64</span>
   </div>
+  <a class="demo-note" href="https://github.com/ALQU-IT/pi-nat64" target="_blank" rel="noopener">Interactive demo · simulated data<br>Get it on GitHub →</a>
   <nav class="sidebar-nav">
-    <a class="nav-item active" data-tab="status">
+    <a href="#" class="nav-item active" data-tab="status">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12l9-9 9 9M5 10v9a1 1 0 001 1h4v-5h4v5h4a1 1 0 001-1v-9"/></svg>Status
     </a>
-    <a class="nav-item" data-tab="blocking">
+    <a href="#" class="nav-item" data-tab="blocking">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Blocking
     </a>
-    <a class="nav-item" data-tab="clients">
+    <a href="#" class="nav-item" data-tab="clients">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Clients
     </a>
-    <a class="nav-item" data-tab="portfwd">
+    <a href="#" class="nav-item" data-tab="portfwd">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 16V4m0 0L3 8m4-4 4 4M17 8v12m0 0 4-4m-4 4-4-4"/></svg>Port Forwarding
     </a>
-    <a class="nav-item" data-tab="settings">
+    <a href="#" class="nav-item" data-tab="settings">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>Settings
     </a>
   </nav>
   <div class="sidebar-footer">
-    <a class="nav-item logout" style="flex:1">
+    <a href="#" class="nav-item logout" style="flex:1">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>Logout
     </a>
     <button class="reboot-btn" title="Reboot gateway" onclick="document.getElementById('reboot-modal').style.display='flex'">
@@ -184,7 +187,7 @@ input[readonly]{opacity:.6;cursor:default;}
   <div class="stat-grid cols3">
     <div class="stat-card"><div class="stat-label">NAT64 sessions</div><div class="stat-val">142</div><div class="stat-sub">active</div></div>
     <div class="stat-card"><div class="stat-label">AP clients</div><div class="stat-val">7</div><div class="stat-sub">connected</div></div>
-    <div class="stat-card"><div class="stat-label">Uptime</div><div class="stat-val" style="font-size:22px;padding-top:5px">4d 11h</div><div class="stat-sub">since last reboot</div></div>
+    <div class="stat-card"><div class="stat-label">DNS64 queries</div><div class="stat-val">48213</div><div class="stat-sub">today (Pi-hole)</div></div>
   </div>
   <div class="section-block">
     <h2>Services</h2>
@@ -193,8 +196,6 @@ input[readonly]{opacity:.6;cursor:default;}
       <div class="service-row"><span class="dot dot-green"></span><span class="svc-name">Unbound (DNS64)</span><span class="svc-desc">Synthesises AAAA records for IPv4-only hosts</span></div>
       <div class="service-row"><span class="dot dot-green"></span><span class="svc-name">hostapd (AP)</span><span class="svc-desc">Wireless access point — pi-nat64 · ch 6 · WPA2</span></div>
       <div class="service-row"><span class="dot dot-green"></span><span class="svc-name">Pi-hole (blocking)</span><span class="svc-desc">Network-wide ad and tracker blocking</span></div>
-      <div class="service-row"><span class="dot dot-green"></span><span class="svc-name">dnsmasq (DHCP)</span><span class="svc-desc">IP address assignment on wlan0</span></div>
-      <div class="service-row"><span class="dot dot-green"></span><span class="svc-name">radvd (RA)</span><span class="svc-desc">IPv6 router advertisements on wlan0</span></div>
     </div>
   </div>
 </section>
@@ -361,13 +362,14 @@ input[readonly]{opacity:.6;cursor:default;}
 <script>
 // ── Tab switching ─────────────────────────────────────────────────────────────
 document.querySelectorAll('.nav-item[data-tab]').forEach(link => {
-  link.addEventListener('click', () => {
+  link.addEventListener('click', e => {
+    e.preventDefault();
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     link.classList.add('active');
     document.getElementById('tab-' + link.dataset.tab).classList.add('active');
     if (link.dataset.tab === 'clients') renderClients();
-    if (link.dataset.tab === 'blocking') renderAdlists(); renderWhitelist();
+    if (link.dataset.tab === 'blocking') { renderAdlists(); renderWhitelist(); }
   });
 });
 
@@ -398,8 +400,8 @@ function renderAdlists() {
   c.innerHTML = `<table class="data-table" style="margin:-1px">
     <thead><tr><th style="width:42%">URL</th><th>Comment</th><th style="width:90px;text-align:right">Domains</th><th style="width:80px">Status</th><th style="width:120px"></th></tr></thead>
     <tbody>${adlists.map(l => `<tr>
-      <td style="font-size:11px;word-break:break-all" title="${l.url}">${l.url.length>60 ? l.url.slice(0,60)+'…' : l.url}</td>
-      <td style="font-size:12px;color:var(--muted)">${l.comment || '—'}</td>
+      <td style="font-size:11px;word-break:break-all" title="${esc(l.url)}">${esc(l.url.length>60 ? l.url.slice(0,60)+'…' : l.url)}</td>
+      <td style="font-size:12px;color:var(--muted)">${esc(l.comment || '—')}</td>
       <td style="text-align:right;font-size:12px">${l.domains.toLocaleString()}</td>
       <td><span class="pill ${l.enabled?'pill-on':'pill-off'}">${l.enabled?'enabled':'disabled'}</span></td>
       <td><div class="action-row">
@@ -452,6 +454,10 @@ function demoGravity() {
   }, 3000);
 }
 
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 // ── Whitelist ─────────────────────────────────────────────────────────────────
 let whitelist = ['safe.example.com', 'mybank.com'];
 
@@ -459,9 +465,9 @@ function renderWhitelist() {
   const list = document.getElementById('wl-list');
   if (!list) return;
   if (!whitelist.length) { list.innerHTML = '<p class="field-hint">No domains whitelisted yet.</p>'; return; }
-  list.innerHTML = whitelist.map(d => `<div class="service-row">
-    <span class="svc-name" style="flex:1">${d}</span>
-    <button class="btn btn-sm btn-danger" onclick="demoRemoveWhitelist('${d}')">Remove</button>
+  list.innerHTML = whitelist.map((d, i) => `<div class="service-row">
+    <span class="svc-name" style="flex:1">${esc(d)}</span>
+    <button class="btn btn-sm btn-danger" onclick="demoRemoveWhitelist(whitelist[${i}])">Remove</button>
   </div>`).join('');
 }
 
