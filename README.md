@@ -135,6 +135,8 @@ Forgot it? On the gateway:
 sudo python3 /opt/pi-nat64/web/app.py --set-password
 ```
 
+The UI uses a translucent **Liquid Glass** design. It follows your light/dark system setting, respects "reduce transparency" and "reduce motion", and has a floating tab bar on phones. In Chromium-based browsers with GPU acceleration, glass edges also refract what's behind them. Other browsers show the same frosted glass without refraction.
+
 | Tab | What you can do |
 |-----|----------------|
 | **Status** | Live NAT64 session count, DNS queries today, AP client count, per-service health |
