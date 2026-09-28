@@ -3,7 +3,7 @@
 <div class="layout">
 
   <!-- Sidebar -->
-  <aside class="sidebar">
+  <aside class="sidebar" data-liquid>
     <div class="sidebar-logo">
       <svg width="24" height="24" viewBox="0 0 32 32" fill="none">
         <rect width="32" height="32" rx="8" fill="#1a1a2e"/>
@@ -11,26 +11,26 @@
       </svg>
       <span>pi-nat64</span>
     </div>
-    <nav class="sidebar-nav">
+    <nav class="sidebar-nav" data-liquid aria-label="Sections">
       <a href="#" class="nav-item active" data-tab="status">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12l9-9 9 9M5 10v9a1 1 0 001 1h4v-5h4v5h4a1 1 0 001-1v-9"/></svg>
-        Status
+        <span class="nav-label">Status</span>
       </a>
       <a href="#" class="nav-item" data-tab="portfwd">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 16V4m0 0L3 8m4-4 4 4M17 8v12m0 0 4-4m-4 4-4-4"/></svg>
-        Port Forwarding
+        <span class="nav-label"><span class="hide-sm">Port Forwarding</span><span class="show-sm">Ports</span></span>
       </a>
       <a href="#" class="nav-item" data-tab="settings">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>
-        Settings
+        <span class="nav-label">Settings</span>
       </a>
       <a href="#" class="nav-item" data-tab="blocking">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        Blocking
+        <span class="nav-label">Blocking</span>
       </a>
       <a href="#" class="nav-item" data-tab="clients">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-        Clients
+        <span class="nav-label">Clients</span>
       </a>
     </nav>
     <button class="update-btn" id="update-btn" type="button" hidden>
@@ -41,51 +41,53 @@
     <div class="sidebar-footer">
       <a href="/logout" class="nav-item logout" aria-label="Logout">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
-        Logout
+        <span class="nav-label">Logout</span>
       </a>
       <button class="reboot-btn" id="reboot-btn" title="Reboot gateway" aria-label="Reboot gateway">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
       </button>
     </div>
 
-    <!-- Reboot confirmation modal -->
-    <div class="modal-backdrop" id="reboot-modal" style="display:none">
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="reboot-title">
-        <div class="modal-header">
-          <h2 id="reboot-title">Reboot gateway?</h2>
-          <button class="modal-close" id="close-reboot-modal" aria-label="Close">✕</button>
-        </div>
-        <p style="color:var(--muted);font-size:13px;margin-bottom:20px">
-          The gateway will be unavailable for ~30 seconds. All connected devices will lose internet access during the reboot.
-        </p>
-        <div class="modal-footer">
-          <button class="btn" id="cancel-reboot">Cancel</button>
-          <button class="btn btn-danger" id="confirm-reboot">Reboot now</button>
-        </div>
-      </div>
-    </div>
-    <!-- Update modal -->
-    <div class="modal-backdrop" id="update-modal" style="display:none">
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="update-title">
-        <div class="modal-header">
-          <h2 id="update-title">Update pi-nat64?</h2>
-          <button class="modal-close" id="close-update-modal" aria-label="Close">✕</button>
-        </div>
-        <div id="update-body">
-          <div class="update-summary" id="update-summary"></div>
-          <p style="color:var(--muted);font-size:13px;margin-bottom:20px">
-            Your passwords, Wi-Fi settings, port-forwards and blocked clients are kept.
-            The web UI restarts during the update (1–5 minutes); Wi-Fi clients may briefly lose connectivity.
-          </p>
-        </div>
-        <div id="update-msg" class="alert" style="display:none"></div>
-        <div class="modal-footer" id="update-footer">
-          <button class="btn" id="cancel-update">Cancel</button>
-          <button class="btn btn-primary" id="confirm-update">Update now</button>
-        </div>
-      </div>
-    </div>
   </aside>
+
+  <!-- Modals (outside the glass sidebar: backdrop-filter would trap position:fixed) -->
+  <!-- Reboot confirmation modal -->
+  <div class="modal-backdrop" id="reboot-modal" style="display:none">
+    <div class="modal" data-liquid role="dialog" aria-modal="true" aria-labelledby="reboot-title">
+      <div class="modal-header">
+        <h2 id="reboot-title">Reboot gateway?</h2>
+        <button class="modal-close" id="close-reboot-modal" aria-label="Close">✕</button>
+      </div>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:20px">
+        The gateway will be unavailable for ~30 seconds. All connected devices will lose internet access during the reboot.
+      </p>
+      <div class="modal-footer">
+        <button class="btn" id="cancel-reboot">Cancel</button>
+        <button class="btn btn-danger" id="confirm-reboot">Reboot now</button>
+      </div>
+    </div>
+  </div>
+  <!-- Update modal -->
+  <div class="modal-backdrop" id="update-modal" style="display:none">
+    <div class="modal" data-liquid role="dialog" aria-modal="true" aria-labelledby="update-title">
+      <div class="modal-header">
+        <h2 id="update-title">Update pi-nat64?</h2>
+        <button class="modal-close" id="close-update-modal" aria-label="Close">✕</button>
+      </div>
+      <div id="update-body">
+        <div class="update-summary" id="update-summary"></div>
+        <p style="color:var(--muted);font-size:13px;margin-bottom:20px">
+          Your passwords, Wi-Fi settings, port-forwards and blocked clients are kept.
+          The web UI restarts during the update (1–5 minutes); Wi-Fi clients may briefly lose connectivity.
+        </p>
+      </div>
+      <div id="update-msg" class="alert" style="display:none"></div>
+      <div class="modal-footer" id="update-footer">
+        <button class="btn" id="cancel-update">Cancel</button>
+        <button class="btn btn-primary" id="confirm-update">Update now</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Main content -->
   <main class="main">
@@ -101,17 +103,17 @@
       </div>
 
       <div class="stat-grid">
-        <div class="stat-card">
+        <div class="stat-card" data-liquid>
           <div class="stat-label">NAT64 sessions</div>
           <div class="stat-val" id="nat64-count">—</div>
           <div class="stat-sub">active</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card" data-liquid>
           <div class="stat-label">DNS64 queries</div>
           <div class="stat-val" id="dns-count">—</div>
           <div class="stat-sub">today (Pi-hole)</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card" data-liquid>
           <div class="stat-label">AP clients</div>
           <div class="stat-val" id="ap-count">—</div>
           <div class="stat-sub">connected</div>
@@ -156,20 +158,20 @@
       </div>
 
       <div class="stat-grid">
-        <div class="stat-card">
+        <div class="stat-card" data-liquid>
           <div class="stat-label">Queries today</div>
           <div class="stat-val" id="ph-queries">—</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card" data-liquid>
           <div class="stat-label">Blocked today</div>
           <div class="stat-val" id="ph-blocked">—</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card" data-liquid>
           <div class="stat-label">Block rate</div>
           <div class="stat-val" id="ph-pct">—</div>
           <div class="stat-sub">%</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card" data-liquid>
           <div class="stat-label">Blocklist size</div>
           <div class="stat-val" id="ph-gravity">—</div>
           <div class="stat-sub">domains</div>
@@ -288,7 +290,7 @@
 
       <!-- Add rule modal -->
       <div class="modal-backdrop" id="add-rule-modal" style="display:none">
-        <div class="modal">
+        <div class="modal" data-liquid role="dialog" aria-modal="true" aria-label="Add port forwarding rule">
           <div class="modal-header">
             <h2>Add port forwarding rule</h2>
             <button class="modal-close" id="close-add-rule" aria-label="Close">✕</button>
