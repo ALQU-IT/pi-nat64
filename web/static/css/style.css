@@ -695,6 +695,50 @@ select { cursor: pointer; }
 .login-hint { font-size: 12px; color: var(--muted); margin-top: 16px; text-align: center; }
 .login-hint code { color: var(--accent); }
 
+/* ===== Layout helpers ===== */
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.section-head h2 { margin: 0; }
+.section-head-flush { margin-bottom: 0; }
+
+.input-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.input-row .grow { flex: 1; min-width: 0; }
+.input-comment { width: 180px; }
+
+/* long technical values (IPv6, URLs, domains) wrap instead of widening the page */
+code.wrap, .cell-url, .svc-name { overflow-wrap: anywhere; }
+.cell-url    { font-size: 11.5px; }
+.cell-muted  { color: var(--muted); }
+.cell-small  { font-size: 12px; }
+.col-num     { text-align: right; }
+.adlist-table .col-url     { width: 42%; }
+.adlist-table .col-status  { width: 80px; }
+.adlist-table .col-actions { width: 120px; }
+
+button, .btn, .nav-item, a { touch-action: manipulation; }
+
+/* ===== Touch screens: finger-sized targets (44px), no zoom-on-focus =====
+   Phone widths are included because not every touch browser reports a coarse
+   pointer. */
+@media (pointer: coarse), (max-width: 760px) {
+  .btn        { min-height: 44px; }
+  .btn-sm     { min-height: 44px; padding: 8px 15px; font-size: 13px; }
+  .update-btn { min-height: 44px; }
+  .reboot-btn, .sidebar-footer .logout { width: 44px; height: 44px; }
+  .modal-close { width: 44px; height: 44px; font-size: 15px; }
+  input, select, textarea { min-height: 44px; }
+}
+/* iOS zooms the page when a focused field's text is under 16px */
+@media (pointer: coarse), (max-width: 760px) {
+  input, select, textarea { font-size: 16px; }
+}
+
 /* ===== Small screens: floating glass tab bar (iOS style) ===== */
 @media (max-width: 760px) {
   .layout {
@@ -728,7 +772,7 @@ select { cursor: pointer; }
   .show-sm { display: inline; }
   .sidebar-version { display: none; }
   .sidebar-footer { border-top: none; padding: 0; gap: 2px; }
-  .sidebar-footer .logout { flex: none; width: 40px; height: 40px; padding: 0; justify-content: center; border-radius: 50%; }
+  .sidebar-footer .logout { flex: none; width: 44px; height: 44px; padding: 0; justify-content: center; border-radius: 50%; }
   .sidebar-footer .nav-label { display: none; }
 
   /* Tab bar */
@@ -768,8 +812,68 @@ select { cursor: pointer; }
 
   .main {
     overflow: visible;
-    padding: 10px 16px calc(104px + env(safe-area-inset-bottom));
+    padding: 10px max(16px, env(safe-area-inset-right)) calc(108px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
   }
+
+  /* The tab bar would cover the focused field while the on-screen keyboard
+     is up — tuck it away while typing. */
+  .sidebar-nav { transition: transform 0.35s var(--ease), opacity 0.25s; }
+  .layout:has(.main :is(input, select, textarea):focus) .sidebar-nav {
+    transform: translateY(calc(100% + 24px));
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* Tables become stacked cards: a title line, "label … value" rows, and a
+     full-width row of actions — no sideways scrolling. */
+  .data-table.cards,
+  .data-table.cards tbody { display: block; width: 100%; }
+  .data-table.cards thead { display: none; }
+  .data-table.cards tr {
+    display: block;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .data-table.cards tr:last-child { border-bottom: none; }
+  .data-table.cards tbody tr:hover td { background: none; }
+  .data-table.cards td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    min-width: 0;
+    padding: 5px 0;
+    border: none;
+    text-align: right;
+    overflow-wrap: anywhere;
+  }
+  .data-table.cards td[data-label]::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    color: var(--muted);
+    font-size: 12.5px;
+    font-weight: 550;
+    text-align: left;
+  }
+  .data-table.cards td.cell-title {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 0 0 6px;
+    font-size: 15px;
+    font-weight: 650;
+    text-align: left;
+  }
+  .data-table.cards td.cell-url { font-size: 13px; font-weight: 600; }
+  .data-table.cards td.cell-actions { padding-top: 10px; }
+  .data-table.cards td.cell-actions > .btn,
+  .data-table.cards td.cell-actions .action-row { flex: 1; }
+  .data-table.cards td.cell-actions .action-row .btn { flex: 1; }
+  .data-table.cards .col-num { text-align: right; }
+
+  .input-row { flex-wrap: wrap; }
+  .input-row > * { flex: 1 1 100%; width: 100%; }
+  .section-head .btn { flex-shrink: 0; }
   .page-header { margin-bottom: 16px; }
   .page-header h1 { font-size: 26px; }
   .stat-grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }
@@ -780,9 +884,12 @@ select { cursor: pointer; }
   .section-block { padding: 18px; }
   .service-row { flex-wrap: wrap; row-gap: 2px; }
   .svc-name { min-width: 0; }
-  .svc-desc { flex-basis: 100%; padding-left: 21px; }
-  .form-row { grid-template-columns: 1fr; }
-  .modal { padding: 20px; border-radius: 26px; }
+  .svc-desc { flex-basis: 100%; }
+  .service-row .dot ~ .svc-desc { padding-left: 21px; }
+  .form-row { grid-template-columns: 1fr; gap: 0; }   /* fields keep their own margin */
+  #save-settings { width: 100%; }
+  .modal { padding: 20px 20px 22px; border-radius: 26px; }
+  .modal-footer .btn { flex: 1; }
   .modal-backdrop { align-items: flex-end; padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
 }
 

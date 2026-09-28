@@ -179,8 +179,8 @@
       </div>
 
       <div class="section-block">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0">
-          <h2 style="margin:0">Ad blocking</h2>
+        <div class="section-head section-head-flush">
+          <h2>Ad blocking</h2>
           <button class="btn btn-primary" id="pihole-toggle-btn">Toggle blocking</button>
         </div>
         <p id="pihole-toggle-msg" class="field-hint" style="margin-top:.5rem"></p>
@@ -194,17 +194,19 @@
       </div>
 
       <div class="section-block">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-          <h2 style="margin:0">Adlists</h2>
+        <div class="section-head">
+          <h2>Adlists</h2>
           <button class="btn btn-sm" id="gravity-btn" data-action="update-gravity">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
             Update gravity
           </button>
         </div>
-        <div style="display:flex;gap:8px;margin-bottom:8px">
-          <input type="text" id="adlist-url" placeholder="https://example.com/adlist.txt" style="flex:1"
-                 data-enter-action="add-adlist">
-          <input type="text" id="adlist-comment" placeholder="Comment (optional)" style="width:180px" data-enter-action="add-adlist">
+        <div class="input-row">
+          <input type="url" id="adlist-url" placeholder="https://example.com/adlist.txt" class="grow"
+                 inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false"
+                 data-enter-action="add-adlist" aria-label="Adlist URL">
+          <input type="text" id="adlist-comment" placeholder="Comment (optional)" class="input-comment"
+                 data-enter-action="add-adlist" aria-label="Comment">
           <button class="btn btn-primary" data-action="add-adlist">Add</button>
         </div>
         <p id="adlist-msg" class="field-hint" style="min-height:1.2rem;margin-bottom:8px"></p>
@@ -215,9 +217,10 @@
 
       <div class="section-block">
         <h2>Whitelist</h2>
-        <div style="display:flex;gap:8px;margin-bottom:8px">
-          <input type="text" id="wl-input" placeholder="e.g. example.com" style="flex:1"
-                 data-enter-action="add-whitelist">
+        <div class="input-row">
+          <input type="text" id="wl-input" placeholder="e.g. example.com" class="grow"
+                 inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false"
+                 data-enter-action="add-whitelist" aria-label="Domain to whitelist">
           <button class="btn btn-primary" id="wl-add-btn" data-action="add-whitelist">Add</button>
         </div>
         <p id="wl-msg" class="field-hint" style="min-height:1.2rem;margin-bottom:8px"></p>
@@ -242,7 +245,7 @@
       </div>
 
       <div class="table-wrap" id="clients-table-wrap">
-        <table class="data-table">
+        <table class="data-table cards">
           <thead>
             <tr>
               <th>Device</th>
@@ -251,7 +254,6 @@
               <th>Signal</th>
               <th>Down / Up</th>
               <th>Connected</th>
-              <th>Status</th>
               <th></th>
             </tr>
           </thead>
@@ -272,7 +274,7 @@
       </div>
 
       <div class="table-wrap" id="rules-table-wrap">
-        <table class="data-table" id="rules-table">
+        <table class="data-table cards" id="rules-table">
           <thead>
             <tr>
               <th>Name</th>
@@ -296,30 +298,30 @@
             <button class="modal-close" id="close-add-rule" aria-label="Close">✕</button>
           </div>
           <div class="form-group">
-            <label>Name</label>
+            <label for="rule-name">Name</label>
             <input type="text" id="rule-name" placeholder="e.g. SSH, Home server">
           </div>
           <div class="form-row">
             <div class="form-group">
-              <label>Protocol</label>
+              <label for="rule-proto">Protocol</label>
               <select id="rule-proto">
                 <option>TCP</option>
                 <option>UDP</option>
               </select>
             </div>
             <div class="form-group">
-              <label>External port</label>
-              <input type="number" id="rule-ext-port" placeholder="2222" min="1" max="65535">
+              <label for="rule-ext-port">External port</label>
+              <input type="number" id="rule-ext-port" placeholder="2222" min="1" max="65535" inputmode="numeric">
             </div>
           </div>
           <div class="form-row">
             <div class="form-group">
-              <label>Destination IPv6</label>
-              <input type="text" id="rule-dest-ip" placeholder="fd00::10">
+              <label for="rule-dest-ip">Destination IPv6</label>
+              <input type="text" id="rule-dest-ip" placeholder="fd00::10" autocapitalize="off" autocorrect="off" spellcheck="false">
             </div>
             <div class="form-group">
-              <label>Destination port</label>
-              <input type="number" id="rule-dest-port" placeholder="22" min="1" max="65535">
+              <label for="rule-dest-port">Destination port</label>
+              <input type="number" id="rule-dest-port" placeholder="22" min="1" max="65535" inputmode="numeric">
             </div>
           </div>
           <div id="rule-error" class="alert alert-error" style="display:none"></div>
@@ -341,12 +343,12 @@
         <h2>Access point</h2>
         <div class="form-group">
           <label for="cfg-ssid">SSID</label>
-          <input type="text" id="cfg-ssid" placeholder="pi-nat64" maxlength="32">
+          <input type="text" id="cfg-ssid" placeholder="pi-nat64" maxlength="32" autocapitalize="off" autocorrect="off" spellcheck="false">
         </div>
         <div class="form-row">
           <div class="form-group">
             <label for="cfg-channel">Channel</label>
-            <input type="number" id="cfg-channel" min="1" max="13" placeholder="6">
+            <input type="number" id="cfg-channel" min="1" max="13" placeholder="6" inputmode="numeric">
           </div>
           <div class="form-group">
             <label for="cfg-pass">WPA2 passphrase</label>

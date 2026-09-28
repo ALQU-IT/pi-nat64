@@ -199,13 +199,13 @@ function renderRules(rules) {
 
   tbody.innerHTML = rules.map(r => `
     <tr data-id="${r.id}">
-      <td>${escHtml(r.name)}</td>
-      <td><span class="pill pill-${escHtml(r.proto.toLowerCase())}">${escHtml(r.proto)}</span></td>
-      <td>${r.ext_port}</td>
-      <td><code>${escHtml(r.dest_ip)}</code></td>
-      <td>${r.dest_port}</td>
-      <td><span class="pill ${r.enabled ? 'pill-on' : 'pill-off'}">${r.enabled ? 'on' : 'off'}</span></td>
-      <td>
+      <td class="cell-title">${escHtml(r.name)}</td>
+      <td data-label="Protocol"><span class="pill pill-${escHtml(r.proto.toLowerCase())}">${escHtml(r.proto)}</span></td>
+      <td data-label="External port">${r.ext_port}</td>
+      <td data-label="Destination"><code class="wrap">${escHtml(r.dest_ip)}</code></td>
+      <td data-label="Dest. port">${r.dest_port}</td>
+      <td data-label="Status"><span class="pill ${r.enabled ? 'pill-on' : 'pill-off'}">${r.enabled ? 'on' : 'off'}</span></td>
+      <td class="cell-actions">
         <div class="action-row">
           <button class="btn btn-sm" data-action="toggle-rule" data-id="${r.id}">${r.enabled ? 'Disable' : 'Enable'}</button>
           <button class="btn btn-sm btn-danger" data-action="delete-rule" data-id="${r.id}">Delete</button>
@@ -397,24 +397,24 @@ async function loadAdlists() {
     }
 
     container.innerHTML = `
-      <table class="data-table" style="margin:-1px">
+      <table class="data-table cards adlist-table">
         <thead>
           <tr>
-            <th style="width:42%">URL</th>
+            <th class="col-url">URL</th>
             <th>Comment</th>
-            <th style="width:90px;text-align:right">Domains</th>
-            <th style="width:80px">Status</th>
-            <th style="width:110px"></th>
+            <th class="col-num">Domains</th>
+            <th class="col-status">Status</th>
+            <th class="col-actions"></th>
           </tr>
         </thead>
         <tbody>
           ${lists.map(l => `
           <tr data-id="${l.id}">
-            <td style="font-size:11px;word-break:break-all" title="${escHtml(l.url)}">${escHtml(truncate(l.url, 60))}</td>
-            <td style="font-size:12px;color:var(--muted)">${escHtml(l.comment || '—')}</td>
-            <td style="text-align:right;font-size:12px">${l.domains ? Number(l.domains).toLocaleString() : '—'}</td>
-            <td><span class="pill ${l.enabled ? 'pill-on' : 'pill-off'}">${l.enabled ? 'enabled' : 'disabled'}</span></td>
-            <td>
+            <td class="cell-title cell-url" title="${escHtml(l.url)}">${escHtml(truncate(l.url, 60))}</td>
+            <td data-label="Comment" class="cell-muted">${escHtml(l.comment || '—')}</td>
+            <td data-label="Domains" class="col-num">${l.domains ? Number(l.domains).toLocaleString() : '—'}</td>
+            <td data-label="Status"><span class="pill ${l.enabled ? 'pill-on' : 'pill-off'}">${l.enabled ? 'enabled' : 'disabled'}</span></td>
+            <td class="cell-actions">
               <div class="action-row">
                 <button class="btn btn-sm" data-action="toggle-adlist" data-id="${l.id}">${l.enabled ? 'Disable' : 'Enable'}</button>
                 <button class="btn btn-sm btn-danger" data-action="delete-adlist" data-id="${l.id}" aria-label="Delete adlist">✕</button>
@@ -594,14 +594,13 @@ async function loadClients() {
         : `<button class="btn btn-sm btn-danger" data-action="block-client" data-mac="${escHtml(c.mac)}">Block</button>`;
 
       return `<tr>
-        <td>${name}</td>
-        <td><code>${escHtml(c.mac)}</code></td>
-        <td><code>${ip}</code></td>
-        <td>${signal}</td>
-        <td style="font-size:12px">${traffic}</td>
-        <td style="font-size:12px;color:var(--muted)">${uptime}</td>
-        <td>${status}</td>
-        <td>${action}</td>
+        <td class="cell-title">${name} ${status}</td>
+        <td data-label="MAC"><code>${escHtml(c.mac)}</code></td>
+        <td data-label="IP"><code>${ip}</code></td>
+        <td data-label="Signal">${signal}</td>
+        <td data-label="Down / Up" class="cell-small">${traffic}</td>
+        <td data-label="Connected" class="cell-small cell-muted">${uptime}</td>
+        <td class="cell-actions">${action}</td>
       </tr>`;
     }).join('');
   } catch (err) {
