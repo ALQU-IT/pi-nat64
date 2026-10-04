@@ -45,7 +45,7 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=_TLS_ENABLED,   # only send cookie over HTTPS when TLS is on
     PERMANENT_SESSION_LIFETIME=3600,       # 1-hour session timeout
-    MAX_CONTENT_LENGTH=64 * 1024,          # every API body is tiny
+    MAX_CONTENT_LENGTH=4 * 1024 * 1024,    # hard cap (config import); others: 64 KB below
 )
 
 # ---------------------------------------------------------------------------
@@ -129,6 +129,16 @@ class BadRequest(Exception):
 @app.errorhandler(BadRequest)
 def _bad_request(exc):
     return jsonify({"error": str(exc)}), 400
+
+
+_SMALL_BODY_LIMIT = 64 * 1024
+
+
+@app.before_request
+def _limit_body_size():
+    # Every API body is tiny except a configuration import.
+    if (request.content_length or 0) > _SMALL_BODY_LIMIT and request.path != "/api/config/import":
+        return jsonify({"error": "Request too large"}), 413
 
 
 @app.errorhandler(413)
@@ -605,11 +615,11 @@ def api_rules_get():
     return jsonify(_load_rules())
 
 
-@app.route("/api/rules", methods=["POST"])
-@login_required
-@csrf_required
-def api_rules_add():
-    data = _json_body()
+def _validate_rule(data: dict) -> dict:
+    """Validate a port-forward definition; return the normalized fields.
+    Shared by the add-rule endpoint and configuration import."""
+    if not isinstance(data, dict):
+        raise BadRequest("Port-forward must be an object")
     name  = _str_field(data, "name").strip()[:64]
     proto = _str_field(data, "proto").upper()
     if not name:
@@ -629,20 +639,21 @@ def api_rules_add():
     dest_ip = _normalize_ipv6(_str_field(data, "dest_ip"))
     if not dest_ip:
         raise BadRequest("Invalid IPv6 destination address")
+    return {"name": name, "proto": proto, "ext_port": ports["ext_port"],
+            "dest_ip": dest_ip, "dest_port": ports["dest_port"]}
+
+
+@app.route("/api/rules", methods=["POST"])
+@login_required
+@csrf_required
+def api_rules_add():
+    fields = _validate_rule(_json_body())
 
     with _state_lock:
         rules = _load_rules()
-        if any(r["proto"] == proto and r["ext_port"] == ports["ext_port"] for r in rules):
-            return jsonify({"error": f"{proto} port {ports['ext_port']} is already forwarded"}), 409
-        rule = {
-            "id":        max((r["id"] for r in rules), default=0) + 1,
-            "name":      name,
-            "proto":     proto,
-            "ext_port":  ports["ext_port"],
-            "dest_ip":   dest_ip,
-            "dest_port": ports["dest_port"],
-            "enabled":   True,
-        }
+        if any(r["proto"] == fields["proto"] and r["ext_port"] == fields["ext_port"] for r in rules):
+            return jsonify({"error": f"{fields['proto']} port {fields['ext_port']} is already forwarded"}), 409
+        rule = {"id": max((r["id"] for r in rules), default=0) + 1, **fields, "enabled": True}
         if not _rule_enable(rule):
             return jsonify({"error": "Failed to apply ip6tables rule — is ip6table_nat loaded?"}), 500
         rules.append(rule)
@@ -790,16 +801,19 @@ def _sanitize_ssid(s: str) -> str:
     return re.sub(r'[^\x20-\x7E]', '', s)[:32]
 
 
-@app.route("/api/settings", methods=["POST"])
-@login_required
-@csrf_required
-def api_settings_save():
-    data = _json_body()
-    current = _read_hostapd()
+def _validate_wifi(data: dict, current: dict) -> dict:
+    """Validate AP settings; return only the hostapd keys that change.
+    Shared by the settings endpoint and configuration import."""
     changes = {}
 
-    # ── Validate EVERYTHING before touching anything, so a rejected field can't
-    #    leave the settings half-applied.
+    band = current.get("hw_mode", "g")
+    if data.get("hw_mode") not in (None, ""):
+        band = _str_field(data, "hw_mode")
+        if band not in _CHANNELS:
+            raise BadRequest("hw_mode must be a, b or g")
+        if band != current.get("hw_mode"):
+            changes["hw_mode"] = band
+
     if "ssid" in data:
         ssid = _sanitize_ssid(_str_field(data, "ssid"))
         if not ssid:
@@ -809,13 +823,19 @@ def api_settings_save():
 
     if "channel" in data and str(data["channel"]).strip() != "":
         ch = _int_field(data, "channel")
-        band = current.get("hw_mode", "g")
-        allowed = _CHANNELS.get(band, _CHANNELS["g"])
+        allowed = _CHANNELS[band] if band in _CHANNELS else _CHANNELS["g"]
         if ch not in allowed:
             raise BadRequest(f"Channel {ch} is not valid for hw_mode={band} "
                              f"(allowed: {', '.join(map(str, sorted(allowed)))})")
         if str(ch) != current.get("channel"):
             changes["channel"] = str(ch)
+
+    if data.get("country_code") not in (None, ""):
+        cc = _str_field(data, "country_code").upper()
+        if not re.fullmatch(r"[A-Z]{2}", cc):
+            raise BadRequest("country_code must be a two-letter ISO country code")
+        if cc != current.get("country_code"):
+            changes["country_code"] = cc
 
     pw = _str_field(data, "wpa_passphrase")
     if pw not in ("", "••••••••"):
@@ -826,6 +846,17 @@ def api_settings_save():
             raise BadRequest("Passphrase contains invalid characters (# not allowed)")
         if pw != current.get("wpa_passphrase"):
             changes["wpa_passphrase"] = pw
+    return changes
+
+
+@app.route("/api/settings", methods=["POST"])
+@login_required
+@csrf_required
+def api_settings_save():
+    data = _json_body()
+    # ── Validate EVERYTHING before touching anything, so a rejected field can't
+    #    leave the settings half-applied.
+    changes = _validate_wifi(data, _read_hostapd())
 
     new_admin = _str_field(data, "new_password")
     if new_admin:
@@ -1209,14 +1240,21 @@ def api_adlists_toggle():
 @csrf_required
 def api_pihole_gravity():
     """Trigger `pihole -g` in the background; response returns before it finishes."""
-    global _gravity_proc
     with _state_lock:
-        if _gravity_running():
+        if not _start_gravity():
             return _gravity_busy_response()
-        _gravity_proc = subprocess.Popen(
-            ["pihole", "-g"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
     return jsonify({"ok": True})
+
+
+def _start_gravity() -> bool:
+    """Start `pihole -g` in the background unless one is running (hold _state_lock)."""
+    global _gravity_proc
+    if _gravity_running():
+        return False
+    _gravity_proc = subprocess.Popen(
+        ["pihole", "-g"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    return True
 
 
 @app.route("/api/pihole/whitelist", methods=["GET"])
@@ -1271,6 +1309,360 @@ def api_pihole_whitelist_remove():
         return jsonify({"error": "Domain is not whitelisted"}), 404
     _pihole_reload_lists()
     return jsonify({"deleted": domain})
+
+
+# ---------------------------------------------------------------------------
+# API — configuration backup (export / import)
+# ---------------------------------------------------------------------------
+# One JSON document holds everything an admin configures through this UI:
+# Wi-Fi AP settings, port-forwards, blocked clients and the Pi-hole lists
+# (adlists, allow/deny lists, blocking on/off). Secrets — the Wi-Fi passphrase
+# and the admin password hash — are included only on request, after re-entering
+# the admin password. Device identity (TLS key, session secret) never leaves.
+#
+# Import validates the WHOLE document before changing anything, then replaces
+# the chosen sections. A rejected entry means nothing is applied.
+
+CONFIG_FORMAT   = "pi-nat64-config"
+CONFIG_VERSION  = 1
+CONFIG_SECTIONS = ("wifi", "port_forwards", "blocked_clients", "pihole", "admin")
+_CFG_LIMITS = {"port_forwards": 512, "blocked_clients": 2048, "adlists": 1000, "domains": 50000}
+_SCRYPT_HASH_RE = re.compile(r'^scrypt\$[0-9a-f]{32}\$[0-9a-f]{64}$')
+_REGEX_ENTRY_RE = re.compile(r'^[^\x00-\x1f\x7f]{1,1024}$')
+_DOMAIN_TYPES   = {0: "allow (exact)", 1: "deny (exact)", 2: "allow (regex)", 3: "deny (regex)"}
+
+
+def _check_admin_password(data: dict):
+    """None if `password` in data is the admin password, else an error response.
+    Failures count towards the login rate limit."""
+    ip = request.remote_addr or ""
+    if not _check_rate_limit(ip):
+        return jsonify({"error": "Too many failed attempts. Try again later."}), 429
+    stored = load_password_hash()
+    if stored is None or not _verify_password(_str_field(data, "password"), stored):
+        _record_failed_login(ip)
+        return jsonify({"error": "Admin password is incorrect"}), 403
+    return None
+
+
+def _pihole_lists_read():
+    """(adlists, domains) from gravity.db, or None when Pi-hole isn't available."""
+    try:
+        with _sqlite_ro(PIHOLE_GRAVITY_DB) as db:
+            adlists = [{"url": r[0], "enabled": bool(r[1]), "comment": r[2] or ""}
+                       for r in db.execute("SELECT address, enabled, comment FROM adlist ORDER BY id")]
+            domains = [{"domain": r[0], "type": int(r[1]), "enabled": bool(r[2]), "comment": r[3] or ""}
+                       for r in db.execute("SELECT domain, type, enabled, comment FROM domainlist "
+                                           "ORDER BY type, domain")]
+        return adlists, domains
+    except Exception:
+        return None
+
+
+def _export_config(include_secrets: bool) -> dict:
+    ap = _read_hostapd()
+    wifi = {k: ap[k] for k in ("ssid", "channel", "hw_mode", "country_code") if ap.get(k)}
+    if include_secrets and ap.get("wpa_passphrase"):
+        wifi["wpa_passphrase"] = ap["wpa_passphrase"]
+
+    forwards = []
+    for r in _load_rules():
+        try:
+            forwards.append({**_validate_rule(r), "enabled": bool(r.get("enabled", True))})
+        except (BadRequest, AttributeError):
+            continue                      # skip a corrupt / legacy entry
+
+    cfg = {
+        "format":           CONFIG_FORMAT,
+        "version":          CONFIG_VERSION,
+        "exported_at":      time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "source":           {"hostname": socket.gethostname(), "commit": _local_version()["commit"]},
+        "includes_secrets": bool(include_secrets),
+        "wifi":             wifi,
+        "port_forwards":    forwards,
+        "blocked_clients":  sorted(_load_blocked_clients()),
+    }
+    lists = _pihole_lists_read()
+    if lists is not None:
+        cfg["pihole"] = {"adlists": lists[0], "domains": lists[1]}
+        state = _blocking_active()
+        if state in ("enabled", "disabled"):
+            cfg["pihole"]["blocking"] = state == "enabled"
+    if include_secrets:
+        stored = load_password_hash()
+        if stored and _SCRYPT_HASH_RE.match(stored):
+            cfg["admin"] = {"password_hash": stored}
+    return cfg
+
+
+def _where(label: str, fn):
+    """Run a validator, prefixing its error with where in the file it happened."""
+    try:
+        return fn()
+    except BadRequest as exc:
+        raise BadRequest(f"{label}: {exc}")
+
+
+def _bool_field(data: dict, key: str, default: bool = True) -> bool:
+    val = data.get(key, default)
+    if not isinstance(val, bool):
+        raise BadRequest(f"'{key}' must be true or false")
+    return val
+
+
+def _validate_config(cfg, sections: list) -> dict:
+    """Validate the requested sections of a backup; return a normalized plan."""
+    if not isinstance(cfg, dict) or cfg.get("format") != CONFIG_FORMAT:
+        raise BadRequest("This is not a pi-nat64 configuration file")
+    version = cfg.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        raise BadRequest("The file has no valid format version")
+    if version > CONFIG_VERSION:
+        raise BadRequest(f"This backup was made by a newer pi-nat64 (format {version}) — "
+                         "update this gateway first")
+
+    def section(name, typ):
+        val = cfg.get(name)
+        if not isinstance(val, typ):
+            raise BadRequest(f"The '{name}' section is malformed")
+        return val
+
+    def limit(name, items):
+        if len(items) > _CFG_LIMITS[name]:
+            raise BadRequest(f"Too many {name.replace('_', ' ')} ({len(items)}, max {_CFG_LIMITS[name]})")
+
+    plan = {}
+
+    if "wifi" in sections:
+        wifi = section("wifi", dict)
+        plan["wifi"] = _where("Wi-Fi", lambda: _validate_wifi(wifi, _read_hostapd()))
+
+    if "port_forwards" in sections:
+        items = section("port_forwards", list)
+        limit("port_forwards", items)
+        rules, seen = [], set()
+        for i, item in enumerate(items, 1):
+            fields = _where(f"Port-forward #{i}", lambda: _validate_rule(item))
+            enabled = _where(f"Port-forward #{i}", lambda: _bool_field(item, "enabled"))
+            key = (fields["proto"], fields["ext_port"])
+            if key in seen:
+                raise BadRequest(f"Port-forward #{i}: {key[0]} port {key[1]} is listed twice")
+            seen.add(key)
+            rules.append({"id": i, **fields, "enabled": enabled})
+        plan["port_forwards"] = rules
+
+    if "blocked_clients" in sections:
+        items = section("blocked_clients", list)
+        limit("blocked_clients", items)
+        macs = set()
+        for i, mac in enumerate(items, 1):
+            mac = mac.strip().lower() if isinstance(mac, str) else ""
+            if not _mac_valid(mac):
+                raise BadRequest(f"Blocked client #{i}: invalid MAC address")
+            macs.add(mac)
+        plan["blocked_clients"] = macs
+
+    if "pihole" in sections:
+        ph = section("pihole", dict)
+        adl, doms = ph.get("adlists", []), ph.get("domains", [])
+        if not isinstance(adl, list) or not isinstance(doms, list):
+            raise BadRequest("The 'pihole' section is malformed")
+        limit("adlists", adl)
+        limit("domains", doms)
+
+        adlists, seen = [], set()
+        for i, a in enumerate(adl, 1):
+            if not isinstance(a, dict):
+                raise BadRequest(f"Adlist #{i}: must be an object")
+            url = _where(f"Adlist #{i}", lambda: _str_field(a, "url").strip())
+            if not _URL_RE.match(url):
+                raise BadRequest(f"Adlist #{i}: invalid URL")
+            if url in seen:
+                continue
+            seen.add(url)
+            adlists.append({
+                "url":     url,
+                "enabled": _where(f"Adlist #{i}", lambda: _bool_field(a, "enabled")),
+                "comment": _where(f"Adlist #{i}", lambda: _str_field(a, "comment").strip()[:255]),
+            })
+
+        domains, seen = [], set()
+        for i, d in enumerate(doms, 1):
+            if not isinstance(d, dict):
+                raise BadRequest(f"Domain #{i}: must be an object")
+            typ = d.get("type", 0)
+            if isinstance(typ, bool) or typ not in _DOMAIN_TYPES:
+                raise BadRequest(f"Domain #{i}: type must be 0–3")
+            value = _where(f"Domain #{i}", lambda: _str_field(d, "domain").strip())
+            if typ in (0, 1):
+                value = value.lower()
+                if not _validate_domain(value):
+                    raise BadRequest(f"Domain #{i}: invalid domain name")
+            elif not _REGEX_ENTRY_RE.match(value):
+                raise BadRequest(f"Domain #{i}: invalid regex entry")
+            if (typ, value) in seen:
+                continue
+            seen.add((typ, value))
+            domains.append({
+                "type":    typ,
+                "domain":  value,
+                "enabled": _where(f"Domain #{i}", lambda: _bool_field(d, "enabled")),
+                "comment": _where(f"Domain #{i}", lambda: _str_field(d, "comment").strip()[:255]),
+            })
+
+        blocking = ph.get("blocking")
+        if blocking is not None and not isinstance(blocking, bool):
+            raise BadRequest("Pi-hole: 'blocking' must be true or false")
+        plan["pihole"] = {"adlists": adlists, "domains": domains, "blocking": blocking}
+
+    if "admin" in sections:
+        stored = section("admin", dict).get("password_hash")
+        if not isinstance(stored, str) or not _SCRYPT_HASH_RE.match(stored):
+            raise BadRequest("Admin: the password hash is invalid")
+        plan["admin"] = stored
+
+    return plan
+
+
+def _apply_config(plan: dict) -> tuple:
+    """Apply a validated plan. Returns (summary, warnings, ap_restarted)."""
+    summary, warnings = {}, []
+
+    with _state_lock:
+        if "pihole" in plan:
+            ph = plan["pihole"]
+            now = int(time.time())
+            with sqlite3.connect(PIHOLE_GRAVITY_DB, timeout=10) as db:
+                # Adlists: update rows whose URL stays (keeps ids / group links),
+                # delete the rest, insert new ones.
+                existing = {r[0]: r[1] for r in db.execute("SELECT address, id FROM adlist")}
+                wanted = {a["url"] for a in ph["adlists"]}
+                for url, aid in existing.items():
+                    if url not in wanted:
+                        db.execute("DELETE FROM adlist WHERE id = ?", (aid,))
+                for a in ph["adlists"]:
+                    if a["url"] in existing:
+                        db.execute("UPDATE adlist SET enabled = ?, comment = ?, date_modified = ? "
+                                   "WHERE address = ?", (int(a["enabled"]), a["comment"], now, a["url"]))
+                    else:
+                        db.execute("INSERT INTO adlist (address, enabled, date_added, comment) "
+                                   "VALUES (?, ?, ?, ?)", (a["url"], int(a["enabled"]), now, a["comment"]))
+                # Allow/deny lists: replaced wholesale
+                db.execute("DELETE FROM domainlist")
+                db.executemany(
+                    "INSERT INTO domainlist (type, domain, enabled, date_added, comment) VALUES (?, ?, ?, ?, ?)",
+                    [(d["type"], d["domain"], int(d["enabled"]), now, d["comment"]) for d in ph["domains"]])
+            _pihole_reload_lists()
+            summary["pihole"] = {"adlists": len(ph["adlists"]), "domains": len(ph["domains"])}
+
+            # New/removed adlists only take effect after gravity runs
+            if set(existing) != wanted:
+                if _start_gravity():
+                    summary["pihole"]["gravity_started"] = True
+                else:
+                    warnings.append("Adlists changed — run “Update gravity” when the current update finishes.")
+
+            if ph["blocking"] is not None:
+                current = _blocking_active()
+                want = "enabled" if ph["blocking"] else "disabled"
+                if current != want and _run(["pihole", "enable" if ph["blocking"] else "disable"], timeout=30) != 0:
+                    warnings.append(f"Could not set Pi-hole blocking to {want}.")
+
+        firewall_changed = False
+        if "port_forwards" in plan:
+            for old in _load_rules():
+                try:
+                    if not _rule_disable(old):
+                        warnings.append(f"Could not remove the old port-forward “{old.get('name', '?')}”.")
+                except (KeyError, TypeError, ValueError):
+                    continue
+            rules = plan["port_forwards"]
+            for r in rules:
+                if r["enabled"] and not _rule_enable(r):
+                    r["enabled"] = False
+                    warnings.append(f"Port-forward “{r['name']}” could not be applied — saved as disabled.")
+            _save_rules(rules)
+            summary["port_forwards"] = len(rules)
+            firewall_changed = True
+
+        if "blocked_clients" in plan:
+            new = plan["blocked_clients"]
+            for mac in _load_blocked_clients() - new:
+                _apply_client_block(mac, block=False)
+            for mac in new:
+                _apply_client_block(mac, block=True)
+            _save_blocked_clients(new)
+            summary["blocked_clients"] = len(new)
+            firewall_changed = True
+
+        if firewall_changed:
+            _persist_firewall()
+
+        if "admin" in plan:
+            _write_password_hash(plan["admin"])
+            session["pw_fp"] = _pw_fingerprint()   # keep THIS session; others are logged out
+            summary["admin"] = True
+
+    ap_restarted = False
+    if plan.get("wifi"):
+        # Last: restarting hostapd drops every Wi-Fi client, possibly this one.
+        if _write_hostapd(plan["wifi"]):
+            ap_restarted = True
+            summary["wifi"] = sorted(plan["wifi"])
+        else:
+            warnings.append("hostapd rejected the imported Wi-Fi settings — the previous ones were kept.")
+    elif "wifi" in plan:
+        summary["wifi"] = []
+
+    return summary, warnings, ap_restarted
+
+
+@app.route("/api/config/export", methods=["POST"])
+@login_required
+@csrf_required
+def api_config_export():
+    data = _json_body()
+    include_secrets = _bool_field(data, "include_secrets", False)
+    if include_secrets:
+        err = _check_admin_password(data)
+        if err:
+            return err
+    body = json.dumps(_export_config(include_secrets), indent=2, ensure_ascii=False) + "\n"
+    name = f"pi-nat64-config-{time.strftime('%Y%m%d-%H%M')}{'-SECRETS' if include_secrets else ''}.json"
+    resp = app.response_class(body, mimetype="application/json")
+    resp.headers["Content-Disposition"] = f'attachment; filename="{name}"'
+    return resp
+
+
+@app.route("/api/config/import", methods=["POST"])
+@login_required
+@csrf_required
+def api_config_import():
+    data = _json_body()
+    err = _check_admin_password(data)
+    if err:
+        return err
+
+    cfg = data.get("config")
+    requested = data.get("sections", list(CONFIG_SECTIONS))
+    if not isinstance(requested, list) or not all(isinstance(x, str) for x in requested):
+        raise BadRequest("'sections' must be a list of section names")
+    sections = [s for s in CONFIG_SECTIONS if s in requested and isinstance(cfg, dict) and s in cfg]
+
+    plan = _validate_config(cfg, sections)       # raises before anything changes
+    if not plan:
+        raise BadRequest("Nothing to import — the file has none of the selected sections")
+    if "pihole" in plan and _gravity_running():
+        return _gravity_busy_response()
+
+    try:
+        summary, warnings, ap_restarted = _apply_config(plan)
+    except Exception as exc:          # validated, so this is an I/O / system failure
+        app.logger.exception("configuration import failed")
+        return jsonify({"error": f"Import failed part-way ({type(exc).__name__}: {exc}) — "
+                                 "some sections may already have been applied"}), 500
+    return jsonify({"ok": True, "imported": summary, "warnings": warnings,
+                    "ap_restarted": ap_restarted})
 
 
 # ---------------------------------------------------------------------------

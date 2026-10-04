@@ -90,6 +90,20 @@ The Update button needs the git checkout you installed from to stay in place. If
 
 ---
 
+## Backup & restore
+
+**Settings → Backup & restore** saves the whole configuration to a JSON file, or restores one on this or another gateway. The file holds the Wi-Fi settings, port forwards, blocked clients, and Pi-hole's adlists, allow/deny lists and blocking state.
+
+- **Export** leaves secrets out by default. Tick *Include secrets* (and enter the admin password) to also export the Wi-Fi passphrase and the admin password hash. That file contains your Wi-Fi passphrase in plain text, so keep it safe.
+- **Import** shows what the file contains and lets you choose sections. Each selected section **replaces** the current one. It needs the admin password.
+  - **All or nothing:** the whole file is validated first, and if any entry is invalid nothing is changed.
+  - **Wi-Fi** is applied last, because it restarts the access point.
+  - **Changed adlists** start a gravity update automatically.
+  - **Admin password** is off by default. Importing it replaces your password with the one in the backup.
+- The TLS certificate and session secret are device-specific and are never exported.
+
+---
+
 ## USB Wi-Fi adapter drivers
 
 If your Raspberry Pi needs an external USB Wi-Fi adapter for `wlan0`, run the driver installer, then re-run `install.sh` so the access point is set up on it:
