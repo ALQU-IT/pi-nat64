@@ -1,6 +1,6 @@
 # pi-nat64
 
-**[Live UI Demo →](https://alqu-it.github.io/pi-nat64/)**
+**[Live UI Demo →](https://alqu-it.github.io/pi-nat64/)**: the real web UI, running against a simulated gateway in your browser. Changing the web UI? Rebuild it with `python3 scripts/build-demo.py`.
 
 NAT64/DNS64 gateway + network-wide ad blocking + Wi-Fi access point, with a browser-based management UI. Built for Raspberry Pi 5.
 
@@ -185,8 +185,11 @@ pi-nat64/
 ├── update.sh                   ← pull the latest version and re-apply it
 ├── install-drivers.sh          ← optional USB Wi-Fi adapter driver/firmware installer
 ├── fix-jool.sh                 ← patch + rebuild Jool NAT64 for kernel 6.15+/6.18+
-├── docs/
-│   └── index.html              ← interactive UI demo (GitHub Pages)
+├── docs/                       ← interactive UI demo (GitHub Pages) — GENERATED
+│   ├── index.html, login.html  ← rendered from web/templates by scripts/build-demo.py
+│   └── static/                 ← the real CSS/JS + demo-api.js (simulated gateway)
+├── scripts/
+│   └── build-demo.py           ← rebuilds docs/ from the real web UI
 ├── configs/                    ← reference copies of what install.sh writes
 │   ├── dns64.conf              ← Unbound DNS64 (127.0.0.1:5335)
 │   ├── pihole-setupVars.conf   ← Pi-hole unattended install config (used by install.sh)

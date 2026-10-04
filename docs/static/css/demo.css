@@ -1,0 +1,16 @@
+/* pi-nat64 — GitHub Pages demo additions (the rest is the real UI's style.css) */
+.demo-banner {
+  margin: 0 0 18px;
+  padding: 10px 16px;
+  border-radius: 14px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--accent) 10%, var(--glass-soft));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.demo-banner strong { color: var(--text); }
+.demo-banner a { color: var(--accent); font-weight: 600; white-space: nowrap; }
+.demo-banner a:hover { text-decoration: underline; }
+.main > .demo-banner { max-width: 1180px; }
+.login-card .demo-banner { margin: 20px 0 0; }
