@@ -387,6 +387,50 @@
 
       <div id="settings-msg" class="alert" style="display:none"></div>
       <button class="btn btn-primary" id="save-settings">Save settings</button>
+
+      <div class="section-block backup-block" id="backup-section">
+        <h2>Backup &amp; restore</h2>
+        <p class="field-hint backup-intro">
+          Save the whole configuration (Wi-Fi, port forwarding, blocked clients and the
+          Pi-hole adlists and allow/deny lists) to a file, or restore it on this or another gateway.
+        </p>
+
+        <h3 class="subhead">Export</h3>
+        <label class="check">
+          <input type="checkbox" id="exp-secrets">
+          <span>Include secrets: Wi-Fi passphrase and admin password</span>
+        </label>
+        <div class="form-group" id="exp-pass-group" hidden>
+          <label for="exp-pass">Admin password</label>
+          <input type="password" id="exp-pass" autocomplete="current-password" placeholder="Required to export secrets">
+          <span class="field-hint">The file will contain your Wi-Fi passphrase in plain text — keep it somewhere safe.</span>
+        </div>
+        <button class="btn" id="export-btn" type="button">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14"/></svg>
+          Download backup
+        </button>
+
+        <h3 class="subhead">Import</h3>
+        <input type="file" id="imp-file" accept=".json,application/json" hidden>
+        <button class="btn" id="imp-choose" type="button">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21V9m0 0-4 4m4-4 4 4M5 3h14"/></svg>
+          Choose backup file…
+        </button>
+        <div id="imp-preview" class="imp-preview" hidden>
+          <p id="imp-source" class="field-hint"></p>
+          <p class="field-hint">Selected sections <strong>replace</strong> the current ones:</p>
+          <div id="imp-sections" class="check-list"></div>
+          <div class="form-group">
+            <label for="imp-pass">Admin password</label>
+            <input type="password" id="imp-pass" autocomplete="current-password" placeholder="Required to import">
+          </div>
+          <div class="action-row">
+            <button class="btn" id="imp-cancel" type="button">Cancel</button>
+            <button class="btn btn-danger-solid" id="imp-apply" type="button">Import selected</button>
+          </div>
+        </div>
+        <div id="backup-msg" class="alert" style="display:none"></div>
+      </div>
     </section>
 
   </main>

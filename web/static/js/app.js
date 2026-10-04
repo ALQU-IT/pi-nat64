@@ -25,7 +25,11 @@ async function api(url, { method = 'GET', body, timeout } = {}) {
   }
   let data = null;
   try { data = await res.json(); } catch (_) { /* non-JSON body */ }
-  if (!res.ok) throw new Error((data && data.error) || `Request failed (HTTP ${res.status})`);
+  if (!res.ok) {
+    const e = new Error((data && data.error) || `Request failed (HTTP ${res.status})`);
+    e.status = res.status;
+    throw e;
+  }
   if (data === null) throw new Error('Unexpected response from the server.');
   return data;
 }
@@ -691,6 +695,175 @@ document.getElementById('confirm-reboot')?.addEventListener('click', async () =>
   };
   setTimeout(probe, 20000);
 });
+
+// ── Backup & restore ─────────────────────────────────────────────────────────
+function backupMsg(kind, text) {
+  const el = document.getElementById('backup-msg');
+  el.style.display = 'block';
+  el.className = 'alert ' + (kind === 'error' ? 'alert-error' : kind === 'ok' ? 'alert-success' : '');
+  el.textContent = text;
+}
+
+function downloadJson(obj, filename) {
+  const blob = new Blob([JSON.stringify(obj, null, 2) + '\n'], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+document.getElementById('exp-secrets')?.addEventListener('change', e => {
+  document.getElementById('exp-pass-group').hidden = !e.target.checked;
+});
+
+document.getElementById('export-btn')?.addEventListener('click', e => withBusy(e.currentTarget, async () => {
+  const secrets = document.getElementById('exp-secrets').checked;
+  const password = document.getElementById('exp-pass').value;
+  if (secrets && !password) {
+    backupMsg('error', 'Enter your admin password to export secrets.');
+    return;
+  }
+  try {
+    const cfg = await api('/api/config/export', { method: 'POST', body: { include_secrets: secrets, password } });
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-');
+    downloadJson(cfg, `pi-nat64-config-${stamp}${secrets ? '-SECRETS' : ''}.json`);
+    setVal('exp-pass', '');
+    backupMsg('ok', secrets
+      ? 'Backup downloaded — it contains secrets, so store it safely.'
+      : 'Backup downloaded (without secrets).');
+  } catch (err) {
+    backupMsg('error', err.message);
+  }
+}));
+
+// Import: read the file in the browser, show what it contains, let the admin
+// pick sections, then send it with the admin password. The server validates
+// the whole file before changing anything.
+const IMPORT_SECTIONS = [
+  { key: 'wifi',            title: 'Wi-Fi access point', checked: true,
+    describe: c => { const w = c.wifi || {}; return [w.ssid && `SSID “${w.ssid}”`, w.channel && `channel ${w.channel}`,
+                     w.wpa_passphrase ? 'passphrase included' : 'passphrase not included'].filter(Boolean).join(', ') +
+                     ' — restarts the Wi-Fi, connected devices briefly drop off'; } },
+  { key: 'port_forwards',   title: 'Port forwarding', checked: true,
+    describe: c => `${(c.port_forwards || []).length} rule(s)` },
+  { key: 'blocked_clients', title: 'Blocked clients', checked: true,
+    describe: c => `${(c.blocked_clients || []).length} device(s)` },
+  { key: 'pihole',          title: 'Pi-hole lists', checked: true,
+    describe: c => { const p = c.pihole || {}; return `${(p.adlists || []).length} adlist(s), ` +
+                     `${(p.domains || []).length} allow/deny entr${(p.domains || []).length === 1 ? 'y' : 'ies'}` +
+                     (p.blocking === false ? ', blocking off' : ''); } },
+  { key: 'admin',           title: 'Admin password', checked: false,
+    describe: () => 'replaces your admin password with the one from the backup — you will log in with that one' },
+];
+let importConfig = null;
+
+function resetImport() {
+  importConfig = null;
+  document.getElementById('imp-preview').hidden = true;
+  document.getElementById('imp-file').value = '';
+  setVal('imp-pass', '');
+}
+
+document.getElementById('imp-choose')?.addEventListener('click', () => {
+  document.getElementById('imp-file').click();
+});
+document.getElementById('imp-cancel')?.addEventListener('click', resetImport);
+
+document.getElementById('imp-file')?.addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  document.getElementById('backup-msg').style.display = 'none';
+  if (file.size > 4 * 1024 * 1024) {
+    backupMsg('error', 'That file is too large to be a pi-nat64 backup.');
+    resetImport();
+    return;
+  }
+  let cfg;
+  try {
+    cfg = JSON.parse(await file.text());
+  } catch (_) {
+    backupMsg('error', 'That file is not valid JSON.');
+    resetImport();
+    return;
+  }
+  if (!cfg || cfg.format !== 'pi-nat64-config') {
+    backupMsg('error', 'That is not a pi-nat64 configuration file.');
+    resetImport();
+    return;
+  }
+  importConfig = cfg;
+
+  const src = cfg.source || {};
+  const when = cfg.exported_at ? new Date(cfg.exported_at) : null;
+  document.getElementById('imp-source').textContent =
+    `Backup of ${src.hostname || 'a gateway'}` +
+    (when && !isNaN(when) ? `, made ${when.toLocaleString()}` : '') +
+    (cfg.includes_secrets ? ' · includes secrets' : ' · no secrets');
+
+  const list = document.getElementById('imp-sections');
+  list.textContent = '';
+  IMPORT_SECTIONS.filter(sec => sec.key in cfg).forEach(sec => {
+    const label = document.createElement('label');
+    label.className = 'check';
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.value = sec.key;
+    box.checked = sec.checked;
+    const text = document.createElement('span');
+    const strong = document.createElement('strong');
+    strong.textContent = sec.title;
+    const desc = document.createElement('small');
+    let d = '';
+    try { d = sec.describe(cfg); } catch (_) { d = 'present'; }
+    desc.textContent = d;
+    text.append(strong, desc);
+    label.append(box, text);
+    list.appendChild(label);
+  });
+  if (!list.children.length) {
+    backupMsg('error', 'The file contains no configuration sections.');
+    resetImport();
+    return;
+  }
+  document.getElementById('imp-preview').hidden = false;
+  document.getElementById('imp-pass').focus();
+});
+
+document.getElementById('imp-apply')?.addEventListener('click', e => withBusy(e.currentTarget, async () => {
+  if (!importConfig) return;
+  const sections = [...document.querySelectorAll('#imp-sections input:checked')].map(b => b.value);
+  const password = document.getElementById('imp-pass').value;
+  if (!sections.length) { backupMsg('error', 'Select at least one section to import.'); return; }
+  if (!password)        { backupMsg('error', 'Enter your admin password to import.'); return; }
+  if (!confirm('Replace the selected settings with the ones from this backup?')) return;
+
+  backupMsg('info', 'Importing…');
+  try {
+    const d = await api('/api/config/import', { method: 'POST', body: { config: importConfig, sections, password } });
+    const done = [];
+    const im = d.imported || {};
+    if ('wifi' in im)            done.push(im.wifi.length ? 'Wi-Fi' : 'Wi-Fi (unchanged)');
+    if ('port_forwards' in im)   done.push(`${im.port_forwards} port forward(s)`);
+    if ('blocked_clients' in im) done.push(`${im.blocked_clients} blocked client(s)`);
+    if (im.pihole)               done.push(`${im.pihole.adlists} adlist(s) and ${im.pihole.domains} list entr${im.pihole.domains === 1 ? 'y' : 'ies'}` +
+                                           (im.pihole.gravity_started ? ' (gravity update started)' : ''));
+    if (im.admin)                done.push('admin password');
+    let text = `Imported: ${done.join(', ')}.`;
+    if (d.ap_restarted) text += ' The Wi-Fi restarted — reconnect if you were on it.';
+    if (d.warnings && d.warnings.length) text += ' Note: ' + d.warnings.join(' ');
+    backupMsg(d.warnings && d.warnings.length ? 'info' : 'ok', text);
+    resetImport();
+    loadSettings();
+  } catch (err) {
+    backupMsg('error', err instanceof TypeError
+      ? 'Connection lost while the Wi-Fi restarted — reconnect and reload to check the result.'
+      : (err.status >= 400 && err.status < 500 ? 'Nothing was changed: ' : '') + err.message);
+  }
+}));
 
 // ── Software update ──────────────────────────────────────────────────────────
 // The Update button stays hidden unless the gateway's git checkout is behind
