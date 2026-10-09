@@ -88,11 +88,12 @@ else
   warn "VM) and re-run to enable the AP."
 fi
 
-# Is jool-dkms installed but left half-configured (failed module build)?
-jool_dkms_broken() {
-  local st
-  st=$(dpkg-query -W -f='${db:Status-Abbrev}' jool-dkms 2>/dev/null || true)
-  [[ -n "$st" && "$st" != "ii "* && "$st" != "un "* && "$st" != "rc "* ]]
+# Is ANY package left half-configured? A failed DKMS build can break jool-dkms
+# itself, or — when a kernel headers package's DKMS hook runs the build — the
+# headers package instead (seen on trixie with kernel 6.18). Either way every
+# later apt call, including Pi-hole's installer, aborts until it's repaired.
+dpkg_unhealthy() {
+  [[ -n "$(dpkg --audit 2>/dev/null)" ]]
 }
 
 # Try the bundled Jool patch/rebuild helper (kernel 6.15+/6.18+ support)
@@ -125,23 +126,31 @@ info "Updating package lists..."
 # NAT64 is unavailable (e.g. rpi-update kernels have no headers package).
 info "Installing kernel headers for the Jool DKMS module..."
 HEADERS_OK=true
-if ! "${APT[@]}" install -y --no-install-recommends "linux-headers-$(uname -r)"; then
-  warn "linux-headers-$(uname -r) unavailable — trying the Raspberry Pi meta package"
-  case "$(uname -r)" in
-    *2712*) HDR_PKG=linux-headers-rpi-2712 ;;
-    *v8*)   HDR_PKG=linux-headers-rpi-v8 ;;
-    *)      HDR_PKG=raspberrypi-kernel-headers ;;
-  esac
-  "${APT[@]}" install -y --no-install-recommends "$HDR_PKG" || HEADERS_OK=false
+KVER=$(uname -r)
+# Raspberry Pi OS kernels are named <version>+rpt-rpi-<flavour> (2712, v8, v7,
+# v6, v8-rt …) with a matching meta package linux-headers-rpi-<flavour>.
+# (The old raspberrypi-kernel-headers package no longer exists on trixie.)
+HDR_META=""
+[[ $KVER == *rpi-* ]] && HDR_META="linux-headers-rpi-${KVER##*rpi-}"
+if ! "${APT[@]}" install -y --no-install-recommends "linux-headers-$KVER"; then
+  warn "linux-headers-$KVER unavailable — trying ${HDR_META:-a meta package}"
+  [[ -n $HDR_META ]] && "${APT[@]}" install -y --no-install-recommends "$HDR_META" || HEADERS_OK=false
 fi
-[[ -d "/lib/modules/$(uname -r)/build" ]] || HEADERS_OK=false
-$HEADERS_OK || warn "No kernel headers for $(uname -r) — the Jool NAT64 module can't be built."
+# Also keep the flavour's meta package installed: future kernel upgrades then
+# bring their headers along, and DKMS rebuilds Jool for the new kernel by itself.
+if [[ -n $HDR_META ]] && apt-cache show "$HDR_META" >/dev/null 2>&1; then
+  "${APT[@]}" install -y --no-install-recommends "$HDR_META" \
+    || warn "Could not install $HDR_META — after a kernel upgrade, re-run install.sh to rebuild Jool."
+fi
+[[ -d "/lib/modules/$KVER/build" ]] || HEADERS_OK=false
+$HEADERS_OK || warn "No kernel headers for $KVER — the Jool NAT64 module can't be built."
 
 # Core packages — fatal on failure (no '| grep ... || true' wrapper, which would
 # mask apt errors under pipefail and report a broken install as success).
 info "Installing packages..."
 "${APT[@]}" install -y \
   unbound \
+  dns-root-data \
   hostapd \
   dnsmasq \
   radvd \
@@ -186,21 +195,26 @@ info "Installing Jool (NAT64)..."
 info "Loading Jool kernel module..."
 modprobe jool 2>/dev/null || true
 
-# Module missing, OR loaded but dpkg left half-configured (build failed for
-# another installed kernel — Pi-hole's installer would then abort on apt): try
-# the patch/rebuild helper, which also re-runs dpkg --configure.
-if [[ ! -d /sys/module/jool ]] || jool_dkms_broken; then
+# Module missing, OR loaded but dpkg left something half-configured (the build
+# failed for another installed kernel — Pi-hole's installer would then abort on
+# apt): try the patch/rebuild helper, which also re-runs dpkg --configure.
+if [[ ! -d /sys/module/jool ]] || dpkg_unhealthy; then
   run_jool_fix
   modprobe jool 2>/dev/null || true
+  dpkg --configure -a >/dev/null 2>&1 || true
 fi
 
-if jool_dkms_broken; then
+if dpkg_unhealthy; then
   # Still half-configured: apt is unusable until this is resolved. Removing
-  # jool-dkms unblocks apt; a module that's already loaded keeps working until
-  # the next reboot, and NAT64 can be restored later with fix-jool.sh.
-  warn "jool-dkms is still half-configured — removing it so apt keeps working..."
+  # jool-dkms unblocks apt (a failing DKMS hook then has nothing to build); a
+  # module that's already loaded keeps working until the next reboot, and NAT64
+  # can be restored later with fix-jool.sh.
+  warn "A failed Jool build left packages half-configured — removing jool-dkms so apt keeps working..."
   dpkg --remove --force-remove-reinstreq jool-dkms 2>/dev/null || true
   dpkg --configure -a 2>/dev/null || true
+  if dpkg_unhealthy; then
+    warn "dpkg still reports problems: $(dpkg --audit | head -3 | tr '\n' ' ')"
+  fi
 fi
 
 if [[ -d /sys/module/jool ]] \
@@ -308,7 +322,19 @@ EOF
 
 # Initialise DNSSEC root trust-anchor (required before first start on a fresh system)
 mkdir -p /var/lib/unbound
-unbound-anchor -a /var/lib/unbound/root.key || true
+# DNSSEC root trust anchor. Unbound refuses to start without it. Debian's
+# unbound.service seeds it from dns-root-data at start-up, but do it here so the
+# first start can't fail (unbound-anchor is a separate, optional package on
+# bookworm/trixie, so it may not exist).
+if [[ ! -s /var/lib/unbound/root.key ]]; then
+  if [[ -r /usr/share/dns/root.key ]]; then
+    cp /usr/share/dns/root.key /var/lib/unbound/root.key
+  elif command -v unbound-anchor >/dev/null 2>&1; then
+    unbound-anchor -a /var/lib/unbound/root.key || true
+  fi
+fi
+[[ -s /var/lib/unbound/root.key ]] \
+  || error "No DNSSEC root trust anchor — install dns-root-data (apt-get install dns-root-data) and re-run."
 chown -R unbound:unbound /var/lib/unbound 2>/dev/null || true
 
 systemctl enable unbound
