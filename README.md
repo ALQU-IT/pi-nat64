@@ -1,6 +1,6 @@
 # pi-nat64
 
-**[Live UI Demo →](https://alqu-it.github.io/pi-nat64/)**: the real web UI, running against a simulated gateway in your browser. Changing the web UI? Rebuild it with `python3 scripts/build-demo.py`.
+**[Live UI Demo →](https://alqu-it.github.io/pi-nat64/)**: the real web UI, running against a simulated gateway in your browser. It's rebuilt automatically by GitHub Actions (`.github/workflows/demo.yml`) whenever the web UI changes on `main`. To preview locally, run `python3 scripts/build-demo.py`.
 
 NAT64/DNS64 gateway + network-wide ad blocking + Wi-Fi access point, with a browser-based management UI. Built for Raspberry Pi 5.
 
@@ -181,6 +181,7 @@ The UI uses a translucent **Liquid Glass** design. It follows your light/dark sy
 
 ```
 pi-nat64/
+├── .github/workflows/demo.yml  ← rebuilds docs/ when the web UI changes on main
 ├── install.sh                  ← installer / upgrader, run as root
 ├── update.sh                   ← pull the latest version and re-apply it
 ├── install-drivers.sh          ← optional USB Wi-Fi adapter driver/firmware installer
