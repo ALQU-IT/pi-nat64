@@ -130,14 +130,11 @@ install_build_prereqs() {
   info "Installing build prerequisites and kernel headers for $KVER…"
   "${APT[@]}" install -y --no-install-recommends build-essential dkms git bc
   if ! "${APT[@]}" install -y --no-install-recommends "linux-headers-$KVER"; then
-    local hdr
-    case "$KVER" in
-      *2712*) hdr=linux-headers-rpi-2712 ;;
-      *v8*)   hdr=linux-headers-rpi-v8 ;;
-      *)      hdr=raspberrypi-kernel-headers ;;
-    esac
+    # Raspberry Pi OS: <version>+rpt-rpi-<flavour> -> linux-headers-rpi-<flavour>
+    # (the old raspberrypi-kernel-headers package no longer exists on trixie)
+    local hdr="linux-headers-rpi-${KVER##*rpi-}"
     warn "linux-headers-$KVER not found — trying $hdr"
-    "${APT[@]}" install -y --no-install-recommends "$hdr" || true
+    [[ $KVER == *rpi-* ]] && "${APT[@]}" install -y --no-install-recommends "$hdr" || true
   fi
   [[ -d "/lib/modules/$KVER/build" ]] \
     || die "No kernel headers for $KVER (/lib/modules/$KVER/build missing) — can't build DKMS drivers."
